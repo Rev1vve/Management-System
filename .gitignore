@@ -8,11 +8,20 @@ dist/
 coverage/
 .turbo/
 *.tsbuildinfo
+__pycache__/
+*.py[cod]
 
 # Runtime configuration and secrets
 .env
 .env.*
 !.env.example
+infra/env/*.env
+infra/secrets/local/
+infra/backups/
+*.dump
+*.dump.sha256
+project-operations-attachments-*.tar.gz
+project-operations-attachments-*.tar.gz.sha256
 
 # Logs and local tooling
 *.log

@@ -11,8 +11,9 @@
     "dev": "turbo run dev",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "infra:check": "python3 -m unittest discover -s infra/tests -p 'test_*.py' -v",
     "lint": "turbo run lint",
-    "quality": "prettier --check . && turbo run lint typecheck test && turbo run build",
+    "quality": "prettier --check . && pnpm infra:check && turbo run lint typecheck test && turbo run build",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck"
   },
