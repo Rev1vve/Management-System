@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Builds and test output
+.next/
+dist/
+coverage/
+.turbo/
+*.tsbuildinfo
+
+# Runtime configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and local tooling
+*.log
+.DS_Store
+.idea/
+.vscode/
