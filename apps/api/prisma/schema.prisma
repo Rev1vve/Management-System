@@ -1,0 +1,604 @@
+// Prisma schema for the Project Operations Center.
+// Data model follows the approved plan section 16 (PostgreSQL 数据模型).
+//
+// Conventions:
+//   - Primary keys are unguessable UUIDs; readable business numbers are unique.
+//   - Timestamps are stored in UTC (timestamptz). Business dates use `date`.
+//   - Soft delete uses `deleted_at`; archive is a status enum value.
+//   - Optimistic concurrency uses a `version` integer on mutable aggregates.
+//   - Column and table names are snake_case via @map / @@map.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UserStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+enum CustomerStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+enum PortfolioStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum ProjectStatus {
+  DRAFT
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  ARCHIVED
+}
+
+enum OrderStatus {
+  DRAFT
+  ACTIVE
+  COMPLETED
+  CANCELLED
+  ARCHIVED
+}
+
+enum OrderItemStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum WorkLogStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  RETURNED
+  REJECTED
+}
+
+enum WorkLogVisibility {
+  PRIVATE
+  PROJECT_VISIBLE
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  RETURNED
+  REJECTED
+}
+
+enum ApprovalDecisionType {
+  APPROVED
+  RETURNED
+  REJECTED
+}
+
+enum ProjectRole {
+  MEMBER
+  PROJECT_MANAGER
+  APPROVER
+  OBSERVER
+}
+
+enum AttachmentStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum NotificationStatus {
+  UNREAD
+  READ
+}
+
+enum EmailStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+  CANCELLED
+}
+
+// ---------------------------------------------------------------------------
+// Identity and permissions
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String     @id @default(uuid())
+  account      String     @unique @map("account")
+  name         String     @map("name")
+  workEmail    String     @unique @map("work_email")
+  status       UserStatus @default(INVITED)
+  passwordHash String?    @map("password_hash")
+  mfaEnabled   Boolean    @default(false) @map("mfa_enabled")
+  lastLoginAt  DateTime?  @map("last_login_at") @db.Timestamptz(3)
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt    DateTime?  @map("deleted_at") @db.Timestamptz(3)
+
+  invitations           Invitation[]          @relation("InvitationCreatedBy")
+  sessions              Session[]
+  mfaRecoveryCodes      MfaRecoveryCode[]
+  systemRoles           UserSystemRole[]
+  projectMemberships    ProjectMembership[]
+  portfolioMemberships  PortfolioMembership[]
+  workLogs              WorkLog[]
+  submittedWorkLogVersions WorkLogVersion[]
+  approvalRequestsAsApprover  ApprovalRequest[]  @relation("ApprovalApprover")
+  approvalRequestsAsSubmitter ApprovalRequest[]  @relation("ApprovalSubmitter")
+  approvalDecisions     ApprovalDecision[]
+  projectEvents         ProjectEvent[]
+  attachments           Attachment[]
+  notifications         Notification[]
+  auditLogs             AuditLog[]
+
+  @@map("users")
+}
+
+model Invitation {
+  id         String           @id @default(uuid())
+  email      String           @map("email")
+  tokenHash  String           @unique @map("token_hash")
+  status     InvitationStatus @default(PENDING)
+  expiresAt  DateTime         @map("expires_at") @db.Timestamptz(3)
+  acceptedAt DateTime?        @map("accepted_at") @db.Timestamptz(3)
+  createdById String          @map("created_by_id")
+  createdAt  DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  createdBy User @relation("InvitationCreatedBy", fields: [createdById], references: [id])
+
+  @@index([email])
+  @@map("invitations")
+}
+
+model Session {
+  id           String    @id @default(uuid())
+  userId       String    @map("user_id")
+  tokenHash    String    @unique @map("token_hash")
+  deviceInfo   String?   @map("device_info")
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model MfaRecoveryCode {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  codeHash  String    @unique @map("code_hash")
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("mfa_recovery_codes")
+}
+
+model SystemRole {
+  id          String   @id @default(uuid())
+  key         String   @unique @map("key")
+  name        String   @map("name")
+  description String?  @map("description")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  userRoles UserSystemRole[]
+  rolePermissions RolePermission[]
+
+  @@map("system_roles")
+}
+
+model Permission {
+  id          String  @id @default(uuid())
+  key         String  @unique @map("key")
+  description String? @map("description")
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model UserSystemRole {
+  userId       String   @map("user_id")
+  systemRoleId String   @map("system_role_id")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user       User       @relation(fields: [userId], references: [id])
+  systemRole SystemRole @relation(fields: [systemRoleId], references: [id])
+
+  @@id([userId, systemRoleId])
+  @@map("user_system_roles")
+}
+
+model RolePermission {
+  systemRoleId String @map("system_role_id")
+  permissionId String @map("permission_id")
+
+  systemRole SystemRole @relation(fields: [systemRoleId], references: [id])
+  permission Permission @relation(fields: [permissionId], references: [id])
+
+  @@id([systemRoleId, permissionId])
+  @@map("role_permissions")
+}
+
+model ProjectMembership {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  projectId String   @map("project_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user    User                  @relation(fields: [userId], references: [id])
+  project Project               @relation(fields: [projectId], references: [id])
+  roles   ProjectMembershipRole[]
+
+  @@unique([userId, projectId])
+  @@index([projectId])
+  @@map("project_memberships")
+}
+
+model ProjectMembershipRole {
+  membershipId String      @map("membership_id")
+  role         ProjectRole @map("role")
+
+  membership ProjectMembership @relation(fields: [membershipId], references: [id])
+
+  @@id([membershipId, role])
+  @@map("project_membership_roles")
+}
+
+model PortfolioMembership {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  portfolioId String   @map("portfolio_id")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user      User      @relation(fields: [userId], references: [id])
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id])
+
+  @@unique([userId, portfolioId])
+  @@index([portfolioId])
+  @@map("portfolio_memberships")
+}
+
+// ---------------------------------------------------------------------------
+// Business entities
+// ---------------------------------------------------------------------------
+
+model Customer {
+  id         String         @id @default(uuid())
+  number     String         @unique @map("number")
+  name       String         @map("name")
+  status     CustomerStatus @default(ACTIVE)
+  notes      String?        @map("notes")
+  version    Int            @default(1)
+  createdAt  DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt  DateTime?      @map("deleted_at") @db.Timestamptz(3)
+
+  contacts CustomerContact[]
+  projects Project[]
+
+  @@map("customers")
+}
+
+model CustomerContact {
+  id         String   @id @default(uuid())
+  customerId String   @map("customer_id")
+  name       String   @map("name")
+  workEmail  String?  @map("work_email")
+  phone      String?  @map("phone")
+  position   String?  @map("position")
+  isPrimary  Boolean  @default(false) @map("is_primary")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@index([customerId])
+  @@map("customer_contacts")
+}
+
+model Portfolio {
+  id         String          @id @default(uuid())
+  name       String          @map("name")
+  description String?        @map("description")
+  status     PortfolioStatus @default(ACTIVE)
+  createdAt  DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt  DateTime?       @map("deleted_at") @db.Timestamptz(3)
+
+  memberships PortfolioMembership[]
+  projects    Project[]
+
+  @@map("portfolios")
+}
+
+model Project {
+  id               String        @id @default(uuid())
+  number           String        @unique @map("number")
+  name             String        @map("name")
+  customerId       String?       @map("customer_id")
+  portfolioId      String?       @map("portfolio_id")
+  description      String?       @map("description")
+  startDate        DateTime?     @map("start_date") @db.Date
+  endDate          DateTime?     @map("end_date") @db.Date
+  status           ProjectStatus @default(DRAFT)
+  completionPercent Int          @default(0) @map("completion_percent")
+  version          Int           @default(1)
+  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt        DateTime?     @map("deleted_at") @db.Timestamptz(3)
+
+  customer    Customer?           @relation(fields: [customerId], references: [id])
+  portfolio   Portfolio?          @relation(fields: [portfolioId], references: [id])
+  memberships ProjectMembership[]
+  orders      Order[]
+  workLogs    WorkLog[]
+  events      ProjectEvent[]
+
+  @@index([customerId])
+  @@index([portfolioId])
+  @@map("projects")
+}
+
+model Order {
+  id           String      @id @default(uuid())
+  number       String      @unique @map("number")
+  projectId    String      @map("project_id")
+  title        String      @map("title")
+  description  String?     @map("description")
+  startDate    DateTime?   @map("start_date") @db.Date
+  deliveryDate DateTime?   @map("delivery_date") @db.Date
+  status       OrderStatus @default(DRAFT)
+  version      Int         @default(1)
+  createdAt    DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt    DateTime?   @map("deleted_at") @db.Timestamptz(3)
+
+  project Project     @relation(fields: [projectId], references: [id])
+  items   OrderItem[]
+  workLogs WorkLog[]
+
+  @@index([projectId])
+  @@map("orders")
+}
+
+model OrderItem {
+  id            String          @id @default(uuid())
+  orderId       String          @map("order_id")
+  name          String          @map("name")
+  quantity      Decimal         @map("quantity") @db.Decimal(12, 2)
+  unit          String?         @map("unit")
+  plannedDate   DateTime?       @map("planned_date") @db.Date
+  completedDate DateTime?       @map("completed_date") @db.Date
+  status        OrderItemStatus @default(PENDING)
+  sortOrder     Int            @default(0) @map("sort_order")
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  order    Order      @relation(fields: [orderId], references: [id])
+  workLogs WorkLog[]
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+// ---------------------------------------------------------------------------
+// Work logs and approval
+// ---------------------------------------------------------------------------
+
+model WorkLog {
+  id           String           @id @default(uuid())
+  number       String           @unique @map("number")
+  authorId     String           @map("author_id")
+  projectId    String           @map("project_id")
+  orderId      String?          @map("order_id")
+  orderItemId  String?          @map("order_item_id")
+  currentVersionId String?       @unique @map("current_version_id")
+  status       WorkLogStatus    @default(DRAFT)
+  visibility   WorkLogVisibility @default(PRIVATE)
+  version      Int              @default(1)
+  createdAt    DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt    DateTime?        @map("deleted_at") @db.Timestamptz(3)
+
+  author          User             @relation(fields: [authorId], references: [id])
+  project         Project          @relation(fields: [projectId], references: [id])
+  order           Order?           @relation(fields: [orderId], references: [id])
+  orderItem       OrderItem?       @relation(fields: [orderItemId], references: [id])
+  currentVersion  WorkLogVersion?  @relation("WorkLogCurrentVersion", fields: [currentVersionId], references: [id])
+  versions        WorkLogVersion[] @relation("WorkLogVersions")
+
+  @@index([authorId])
+  @@index([projectId])
+  @@index([status])
+  @@map("work_logs")
+}
+
+model WorkLogVersion {
+  id            String   @id @default(uuid())
+  workLogId     String   @map("work_log_id")
+  versionNumber Int      @map("version_number")
+  workDate      DateTime @map("work_date") @db.Date
+  hours         Decimal  @map("hours") @db.Decimal(10, 2)
+  completion    String   @map("completion")
+  progressNote  String?  @map("progress_note")
+  submittedById String   @map("submitted_by_id")
+  submittedAt   DateTime @default(now()) @map("submitted_at") @db.Timestamptz(3)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  workLog      WorkLog          @relation("WorkLogVersions", fields: [workLogId], references: [id])
+  submittedBy  User             @relation(fields: [submittedById], references: [id])
+  currentFor   WorkLog?         @relation("WorkLogCurrentVersion")
+  approvalRequests ApprovalRequest[]
+
+  @@unique([workLogId, versionNumber])
+  @@index([workLogId])
+  @@map("work_log_versions")
+}
+
+model ApprovalRequest {
+  id                String         @id @default(uuid())
+  workLogVersionId  String         @map("work_log_version_id")
+  approverId        String         @map("approver_id")
+  submitterId       String         @map("submitter_id")
+  status            ApprovalStatus @default(PENDING)
+  submittedAt       DateTime       @default(now()) @map("submitted_at") @db.Timestamptz(3)
+  processedAt       DateTime?      @map("processed_at") @db.Timestamptz(3)
+  createdAt         DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  workLogVersion WorkLogVersion    @relation(fields: [workLogVersionId], references: [id])
+  approver       User              @relation("ApprovalApprover", fields: [approverId], references: [id])
+  submitter      User              @relation("ApprovalSubmitter", fields: [submitterId], references: [id])
+  decisions      ApprovalDecision[]
+
+  @@unique([workLogVersionId])
+  @@index([approverId, status])
+  @@map("approval_requests")
+}
+
+model ApprovalDecision {
+  id                String           @id @default(uuid())
+  approvalRequestId String           @map("approval_request_id")
+  decision          ApprovalDecisionType
+  comment           String?          @map("comment")
+  decidedById       String           @map("decided_by_id")
+  decidedAt         DateTime         @default(now()) @map("decided_at") @db.Timestamptz(3)
+
+  approvalRequest ApprovalRequest @relation(fields: [approvalRequestId], references: [id])
+  decidedBy       User            @relation(fields: [decidedById], references: [id])
+
+  @@index([approvalRequestId])
+  @@map("approval_decisions")
+}
+
+model ProjectEvent {
+  id        String   @id @default(uuid())
+  projectId String   @map("project_id")
+  eventType String   @map("event_type")
+  summary   String   @map("summary")
+  actorId   String?  @map("actor_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  project Project @relation(fields: [projectId], references: [id])
+  actor   User?   @relation(fields: [actorId], references: [id])
+
+  @@index([projectId])
+  @@map("project_events")
+}
+
+// ---------------------------------------------------------------------------
+// Files, notifications and audit
+// ---------------------------------------------------------------------------
+
+model Attachment {
+  id           String           @id @default(uuid())
+  storageKey   String           @unique @map("storage_key")
+  originalName String           @map("original_name")
+  mimeType     String           @map("mime_type")
+  sizeBytes    Int              @map("size_bytes")
+  sha256       String           @map("sha256")
+  uploadedById String           @map("uploaded_by_id")
+  resourceType String           @map("resource_type")
+  resourceId   String           @map("resource_id")
+  status       AttachmentStatus @default(ACTIVE)
+  createdAt    DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt    DateTime?        @map("deleted_at") @db.Timestamptz(3)
+
+  uploadedBy User @relation(fields: [uploadedById], references: [id])
+
+  @@index([uploadedById])
+  @@index([resourceType, resourceId])
+  @@map("attachments")
+}
+
+model Notification {
+  id           String             @id @default(uuid())
+  userId       String             @map("user_id")
+  eventType    String             @map("event_type")
+  resourceType String             @map("resource_type")
+  resourceId   String?            @map("resource_id")
+  title        String             @map("title")
+  body         String?            @map("body")
+  status       NotificationStatus @default(UNREAD)
+  readAt       DateTime?          @map("read_at") @db.Timestamptz(3)
+  createdAt    DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, status])
+  @@map("notifications")
+}
+
+model EmailOutbox {
+  id           String      @id @default(uuid())
+  toAddress    String      @map("to_address")
+  subject      String      @map("subject")
+  body         String      @map("body")
+  status       EmailStatus @default(PENDING)
+  retryCount   Int         @default(0) @map("retry_count")
+  nextRetryAt  DateTime?   @map("next_retry_at") @db.Timestamptz(3)
+  lastError    String?     @map("last_error")
+  sentAt       DateTime?   @map("sent_at") @db.Timestamptz(3)
+  createdAt    DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([status, nextRetryAt])
+  @@map("email_outbox")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid())
+  actorId      String?  @map("actor_id")
+  action       String   @map("action")
+  resourceType String   @map("resource_type")
+  resourceId   String?  @map("resource_id")
+  projectId    String?  @map("project_id")
+  result       String   @map("result")
+  summary      String?  @map("summary")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([actorId])
+  @@index([resourceType, resourceId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model SystemSetting {
+  key         String   @id
+  value       String   @map("value")
+  description String?  @map("description")
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("system_settings")
+}
