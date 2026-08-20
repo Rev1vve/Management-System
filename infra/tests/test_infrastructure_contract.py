@@ -59,10 +59,13 @@ class InfrastructureContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             secret_path = Path(temp_dir) / "postgres-password"
             secret_path.write_text("contract-test-only\n", encoding="utf-8")
+            mfa_secret_path = Path(temp_dir) / "mfa-secret-key"
+            mfa_secret_path.write_text("c" * 64 + "\n", encoding="utf-8")
             env = os.environ.copy()
             env.update(
                 {
                     "POSTGRES_PASSWORD_FILE": str(secret_path),
+                    "MFA_SECRET_KEY_FILE": str(mfa_secret_path),
                     "APP_HTTP_PORT": "18080",
                     "MAILPIT_HTTP_PORT": "18025",
                 }

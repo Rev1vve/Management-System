@@ -29,3 +29,40 @@ jobs:
 
       - name: Run quality gate
         run: pnpm quality
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare disposable PostgreSQL password secret
+        # A fresh random password per run; the file path is gitignored and the
+        # secret never enters the repository, image layers, or job logs.
+        run: |
+          mkdir -p infra/secrets/local
+          openssl rand -hex 24 > infra/secrets/local/dev-postgres-password.txt
+          chmod 600 infra/secrets/local/dev-postgres-password.txt
+
+      - name: Start PostgreSQL on the private network
+        run: docker compose -f infra/compose.dev.yml up -d postgres
+        env:
+          COMPOSE_PROJECT_NAME: project-operations-center-verify-ci
+          POSTGRES_PASSWORD_FILE: ${{ github.workspace }}/infra/secrets/local/dev-postgres-password.txt
+
+      - name: Run migrations, seed and integration tests
+        run: |
+          docker compose -f infra/compose.dev.yml run --rm db-tools pnpm db:migrate:deploy
+          docker compose -f infra/compose.dev.yml run --rm db-tools pnpm db:seed
+          docker compose -f infra/compose.dev.yml run --rm db-tools pnpm test:integration
+        env:
+          COMPOSE_PROJECT_NAME: project-operations-center-verify-ci
+          POSTGRES_PASSWORD_FILE: ${{ github.workspace }}/infra/secrets/local/dev-postgres-password.txt
+
+      - name: Tear down verification services
+        if: always()
+        run: docker compose -f infra/compose.dev.yml down --volumes --remove-orphans
+        env:
+          COMPOSE_PROJECT_NAME: project-operations-center-verify-ci
+          POSTGRES_PASSWORD_FILE: ${{ github.workspace }}/infra/secrets/local/dev-postgres-password.txt

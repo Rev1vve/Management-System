@@ -30,19 +30,20 @@ async function main(): Promise<void> {
   });
 
   try {
-    // System roles (upserted by stable key).
+    // System roles (upserted by stable key). Privileged roles require TOTP
+    // (plan D-056); a pure employee account may opt out.
     const roles = [
-      { key: 'ADMIN', name: '系统管理员' },
-      { key: 'EMPLOYEE', name: '普通员工' },
-      { key: 'APPROVER', name: '审批人' },
-      { key: 'PROJECT_MANAGER', name: '项目经理' },
-      { key: 'PORTFOLIO_DIRECTOR', name: '项目总监' },
-      { key: 'EXECUTIVE', name: '高层领导' },
+      { key: 'ADMIN', name: '系统管理员', requiresMfa: true },
+      { key: 'EMPLOYEE', name: '普通员工', requiresMfa: false },
+      { key: 'APPROVER', name: '审批人', requiresMfa: true },
+      { key: 'PROJECT_MANAGER', name: '项目经理', requiresMfa: true },
+      { key: 'PORTFOLIO_DIRECTOR', name: '项目总监', requiresMfa: true },
+      { key: 'EXECUTIVE', name: '高层领导', requiresMfa: true },
     ];
     for (const role of roles) {
       await prisma.systemRole.upsert({
         where: { key: role.key },
-        update: { name: role.name },
+        update: { name: role.name, requiresMfa: role.requiresMfa },
         create: role,
       });
     }

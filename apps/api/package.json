@@ -5,7 +5,7 @@
   "scripts": {
     "build": "prisma generate && tsc -p tsconfig.build.json",
     "db:migrate:deploy": "prisma migrate deploy",
-    "db:seed": "prisma db seed",
+    "db:seed": "prisma generate && prisma db seed",
     "dev": "tsx watch src/main.ts",
     "generate": "prisma generate",
     "lint": "eslint .",
@@ -20,11 +20,15 @@
     "@nestjs/platform-express": "11.2.1",
     "@prisma/adapter-pg": "7.9.1",
     "@prisma/client": "7.9.1",
+    "cookie-parser": "1.4.7",
+    "otplib": "13.4.1",
     "reflect-metadata": "0.2.2",
     "rxjs": "7.8.2"
   },
   "devDependencies": {
     "@nestjs/testing": "11.2.1",
+    "@types/cookie-parser": "1.4.10",
+    "@types/express": "5.0.6",
     "@types/node": "26.2.0",
     "@types/supertest": "7.2.1",
     "eslint": "9.39.5",

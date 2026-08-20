@@ -28,6 +28,11 @@ enum UserStatus {
   ARCHIVED
 }
 
+enum SessionStatus {
+  PENDING_MFA
+  ACTIVE
+}
+
 enum InvitationStatus {
   PENDING
   ACCEPTED
@@ -132,6 +137,15 @@ model User {
   status       UserStatus @default(INVITED)
   passwordHash String?    @map("password_hash")
   mfaEnabled   Boolean    @default(false) @map("mfa_enabled")
+  // Encrypted TOTP secret (AES-256-GCM); plaintext secret never stored.
+  mfaSecretCiphertext String?  @map("mfa_secret_ciphertext")
+  // Login throttling state (survives process restarts; no Redis needed).
+  failedLoginCount Int        @default(0) @map("failed_login_count")
+  lockedUntil      DateTime?  @map("locked_until") @db.Timestamptz(3)
+  // MFA challenge throttling (step two of login); independent of the
+  // password-step counters so the two lockouts cannot cancel each other.
+  mfaFailedAttempts Int       @default(0) @map("mfa_failed_attempts")
+  mfaLockedUntil    DateTime? @map("mfa_locked_until") @db.Timestamptz(3)
   lastLoginAt  DateTime?  @map("last_login_at") @db.Timestamptz(3)
   createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
@@ -173,17 +187,20 @@ model Invitation {
 }
 
 model Session {
-  id           String    @id @default(uuid())
-  userId       String    @map("user_id")
-  tokenHash    String    @unique @map("token_hash")
-  deviceInfo   String?   @map("device_info")
-  expiresAt    DateTime  @map("expires_at") @db.Timestamptz(3)
-  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz(3)
-  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  id           String        @id @default(uuid())
+  userId       String        @map("user_id")
+  tokenHash    String        @unique @map("token_hash")
+  status       SessionStatus @default(PENDING_MFA)
+  deviceInfo   String?       @map("device_info")
+  lastUsedAt   DateTime?     @map("last_used_at") @db.Timestamptz(3)
+  expiresAt    DateTime      @map("expires_at") @db.Timestamptz(3)
+  revokedAt    DateTime?     @map("revoked_at") @db.Timestamptz(3)
+  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
 
   user User @relation(fields: [userId], references: [id])
 
   @@index([userId])
+  @@index([status])
   @@map("sessions")
 }
 
@@ -205,6 +222,9 @@ model SystemRole {
   key         String   @unique @map("key")
   name        String   @map("name")
   description String?  @map("description")
+  // Privileged roles (approver, project manager, director, executive, admin)
+  // must have TOTP enabled (plan D-056); employee-only accounts may opt out.
+  requiresMfa Boolean  @default(false) @map("requires_mfa")
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 

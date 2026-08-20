@@ -41,10 +41,14 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-project_operations}
       POSTGRES_USER: ${POSTGRES_USER:-project_operations}
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      NODE_ENV: production
+      MFA_SECRET_KEY_FILE: /run/secrets/mfa_secret_key
       TZ: UTC
     secrets:
       - source: postgres_password
         target: postgres_password
+      - source: mfa_secret_key
+        target: mfa_secret_key
     volumes:
       - attachments_data:/srv/attachments
     networks:
@@ -136,3 +140,5 @@ volumes:
 secrets:
   postgres_password:
     file: ${POSTGRES_PASSWORD_FILE:?Set POSTGRES_PASSWORD_FILE to a readable secret file}
+  mfa_secret_key:
+    file: ${MFA_SECRET_KEY_FILE:?Set MFA_SECRET_KEY_FILE to a readable 64-hex-char secret file}

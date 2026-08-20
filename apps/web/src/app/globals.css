@@ -80,3 +80,126 @@ h1 {
     padding: 24px 20px;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Auth pages (task 5): login / activate / MFA, built on the approved design
+ * tokens (navy structure, emerald success, light-grey workspace).
+ * ------------------------------------------------------------------------- */
+
+.auth-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+}
+
+.form-stack {
+  display: grid;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field-label {
+  color: var(--color-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.field input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+}
+
+.field input:focus {
+  outline: 2px solid var(--color-navy);
+  outline-offset: 1px;
+}
+
+.field-error,
+.form-error {
+  margin: 0;
+  color: #b42318;
+  font-size: 13px;
+}
+
+.btn-primary {
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--color-navy);
+  color: #ffffff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  padding: 8px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-navy);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mfa-qr {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface);
+  display: inline-block;
+}
+
+.recovery-codes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.recovery-codes li {
+  padding: 8px 10px;
+  border: 1px dashed var(--color-border);
+  border-radius: 8px;
+  background: var(--color-page);
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.session-list {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
