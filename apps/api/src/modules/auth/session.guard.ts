@@ -33,7 +33,7 @@ export interface AuthenticatedRequest extends Request {
 export class SessionGuard implements CanActivate {
   constructor(
     private readonly sessions: SessionsService,
-    private readonly reflector: Reflector,
+    protected readonly reflector: Reflector,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {

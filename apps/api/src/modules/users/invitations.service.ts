@@ -28,13 +28,14 @@ export interface AcceptInvitationInput {
 
 /**
  * Invitation lifecycle (task 5, plan section 20):
- * - Admins create short-lived, single-use invitations; only the SHA-256 digest
- *   of the token is stored and the activation link is enqueued in EmailOutbox.
+ * - Users with the `user:invite` permission create short-lived, single-use
+ *   invitations; only the SHA-256 digest of the token is stored and the
+ *   activation link is enqueued in EmailOutbox.
  * - Activation consumes the invitation exactly once: it sets the password,
  *   activates the user and marks the invitation ACCEPTED. Replay, expiry and
  *   unknown tokens all fail closed with 410 Gone.
  *
- * Full admin role enforcement lives in the HTTP guard layer (task 6); this
+ * Permission enforcement lives in the HTTP guard layer (task 6); this
  * service only implements the invitation mechanics.
  */
 @Injectable()
@@ -95,17 +96,6 @@ export class InvitationsService {
     });
 
     return { token, invitation };
-  }
-
-  /** Minimal admin gate for invitation creation (full permissions: task 6). */
-  async isAdmin(userId: string): Promise<boolean> {
-    const membership = await this.prisma.userSystemRole.findFirst({
-      where: {
-        userId,
-        systemRole: { key: 'ADMIN' },
-      },
-    });
-    return membership !== null;
   }
 
   async acceptInvitation(input: AcceptInvitationInput): Promise<User> {

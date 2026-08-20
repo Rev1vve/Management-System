@@ -1,8 +1,10 @@
-import { Body, Controller, ForbiddenException, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 
 import { InvitationsService } from './invitations.service';
-import { SessionGuard } from '../auth/session.guard';
+import { PermissionsGuard } from '../authorization/permissions.guard';
+import { Permissions } from '../authorization/permissions.decorator';
+import { PERMISSIONS } from '../authorization/permission.constants';
 
 export interface CreateInvitationBody {
   email: string;
@@ -16,9 +18,9 @@ export interface AcceptInvitationBody {
 
 /**
  * Invitation endpoints: public activation (single-use token + password setup)
- * and admin creation. Admin creation requires an authenticated session whose
- * user holds the ADMIN system role (minimal gate; full permission kernel is
- * task 6).
+ * and permission-gated creation. Creation requires the `user:invite` system
+ * permission (granted to ADMIN by the seeded matrix); the PermissionsGuard
+ * rejects callers without it with 403 before the service is reached.
  */
 @Controller('invitations')
 export class InvitationsController {
@@ -30,14 +32,11 @@ export class InvitationsController {
     return { ok: true, account: user.account };
   }
 
-  @UseGuards(SessionGuard)
+  @UseGuards(PermissionsGuard)
+  @Permissions(PERMISSIONS.USER_INVITE)
   @Post()
   async create(@Req() req: Request, @Body() body: CreateInvitationBody) {
     const { user } = req as unknown as { user: { id: string } };
-    const isAdmin = await this.invitations.isAdmin(user.id);
-    if (!isAdmin) {
-      throw new ForbiddenException('只有管理员可以邀请用户');
-    }
     const result = await this.invitations.createInvitation({
       actorId: user.id,
       email: body.email,
