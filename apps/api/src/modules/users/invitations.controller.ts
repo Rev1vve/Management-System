@@ -37,12 +37,14 @@ export class InvitationsController {
   @Post()
   async create(@Req() req: Request, @Body() body: CreateInvitationBody) {
     const { user } = req as unknown as { user: { id: string } };
-    const result = await this.invitations.createInvitation({
+    const { invitation } = await this.invitations.createInvitation({
       actorId: user.id,
       email: body.email,
     });
-    // The raw token is returned exactly once for development; in production
-    // the activation link is delivered by the EmailOutbox worker.
-    return { ok: true, invitationId: result.invitation.id, token: result.token };
+    return {
+      ok: true,
+      invitationId: invitation.id,
+      expiresAt: invitation.expiresAt,
+    };
   }
 }

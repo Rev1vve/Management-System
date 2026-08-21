@@ -14,7 +14,7 @@ const inviteSchema = z.object({
 type InviteForm = z.infer<typeof inviteSchema>;
 
 export default function AdminInvitePage() {
-  const [result, setResult] = useState<{ token: string } | null>(null);
+  const [created, setCreated] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const {
     register,
@@ -25,12 +25,10 @@ export default function AdminInvitePage() {
 
   async function onSubmit(values: InviteForm): Promise<void> {
     setError(null);
-    setResult(null);
+    setCreated(false);
     try {
-      const created = await api.createInvitation({ email: values.email });
-      // Development: the raw token is returned exactly once. In production the
-      // activation link is delivered by the EmailOutbox worker instead.
-      setResult({ token: created.token });
+      await api.createInvitation({ email: values.email });
+      setCreated(true);
       reset();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : '邀请失败，请稍后再试');
@@ -42,9 +40,7 @@ export default function AdminInvitePage() {
       <section className="status-panel" aria-labelledby="invite-title">
         <p className="eyebrow">项目运营中心</p>
         <h1 id="invite-title">邀请用户</h1>
-        <p className="boundary-note">
-          输入对方的工作邮箱，系统会生成一次性激活链接（开发环境直接返回令牌）。
-        </p>
+        <p className="boundary-note">输入对方的工作邮箱，系统会通过邮件发送一次性激活链接。</p>
 
         <form className="form-stack" onSubmit={handleSubmit(onSubmit)} noValidate>
           <label className="field">
@@ -64,13 +60,13 @@ export default function AdminInvitePage() {
           ) : null}
 
           <button type="submit" className="btn-primary" disabled={isSubmitting}>
-            {isSubmitting ? '生成中…' : '生成邀请'}
+            {isSubmitting ? '发送中…' : '发送邀请'}
           </button>
         </form>
 
-        {result ? (
+        {created ? (
           <p className="status-line" role="status">
-            邀请已创建。激活令牌（仅此一次）：<code>{result.token}</code>
+            邀请已创建，激活邮件已加入发送队列。
           </p>
         ) : null}
       </section>

@@ -21,11 +21,12 @@ describe('LoginPage', () => {
     global.fetch = vi.fn();
   });
 
-  it('renders the login form with account and password fields', () => {
-    render(<LoginPage />);
-    expect(screen.getByLabelText(/账号或工作邮箱/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/密码/i)).toBeInTheDocument();
+  it('renders a compact, focused login form with account and password fields', () => {
+    const { container } = render(<LoginPage />);
+    expect(screen.getByLabelText(/账号或工作邮箱/i)).toHaveAttribute('autocomplete', 'username');
+    expect(screen.getByLabelText(/密码/i)).toHaveAttribute('autocomplete', 'current-password');
     expect(screen.getByRole('button', { name: /登录/i })).toBeInTheDocument();
+    expect(container.querySelector('.status-panel')).toHaveClass('auth-panel-compact');
   });
 
   it('shows validation errors for empty required fields', async () => {

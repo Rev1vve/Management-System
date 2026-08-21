@@ -158,5 +158,5 @@ export class InvitationsService {
 
 function activationLink(token: string): string {
   const baseUrl = process.env.WEB_PUBLIC_BASE_URL ?? 'http://127.0.0.1:3000';
-  return `${baseUrl}/invite/accept?token=${encodeURIComponent(token)}`;
+  return `${baseUrl}/activate?token=${encodeURIComponent(token)}`;
 }

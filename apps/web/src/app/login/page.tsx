@@ -42,7 +42,7 @@ export default function LoginPage() {
 
   return (
     <main className="auth-shell">
-      <section className="status-panel" aria-labelledby="login-title">
+      <section className="status-panel auth-panel-compact" aria-labelledby="login-title">
         <p className="eyebrow">项目运营中心</p>
         <h1 id="login-title">登录</h1>
         <p className="boundary-note">使用管理员分配的账号或工作邮箱登录。</p>

@@ -3,6 +3,8 @@ import type { NextConfig } from 'next';
 const API_ORIGIN = process.env.API_ORIGIN ?? 'http://127.0.0.1:3001';
 
 const nextConfig: NextConfig = {
+  agentRules: false,
+  devIndicators: false,
   poweredByHeader: false,
   reactStrictMode: true,
   async rewrites() {

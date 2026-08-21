@@ -74,7 +74,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
   createInvitation: (body: { email: string }) =>
-    request<{ ok: boolean; invitationId: string; token: string }>('/invitations', {
+    request<{ ok: boolean; invitationId: string; expiresAt: string }>('/invitations', {
       method: 'POST',
       body: JSON.stringify(body),
     }),

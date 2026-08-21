@@ -1,0 +1,26 @@
+:root {
+  color-scheme: light;
+  --color-navy: #0f2747;
+  --color-navy-strong: #091b33;
+  --color-primary: #1d4ed8;
+  --color-primary-hover: #1e40af;
+  --color-page: #f4f6f8;
+  --color-surface: #ffffff;
+  --color-surface-subtle: #f8fafc;
+  --color-text: #172033;
+  --color-muted: #627187;
+  --color-border: #d8dee8;
+  --color-border-strong: #b8c2d1;
+  --color-success: #047857;
+  --color-warning: #b45309;
+  --color-danger: #b42318;
+  --color-info: #2563eb;
+  --focus-ring: #2563eb;
+  --radius-control: 8px;
+  --radius-card: 12px;
+  --radius-pill: 999px;
+  --shadow-card: 0 1px 2px rgb(15 39 71 / 4%), 0 8px 24px rgb(15 39 71 / 6%);
+  --shadow-overlay: 0 20px 48px rgb(9 27 51 / 22%);
+  --font-sans:
+    'Noto Sans CJK SC', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', Arial, sans-serif;
+}
