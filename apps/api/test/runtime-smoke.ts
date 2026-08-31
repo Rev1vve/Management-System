@@ -8,6 +8,7 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/database/prisma.service';
 import { MfaCipherService } from '../src/crypto/mfa-cipher.service';
+import { ATTACHMENTS_ROOT } from '../src/modules/attachments/attachments.service';
 
 async function verifyRuntime(): Promise<void> {
   // Compile the real AppModule but stub the database-backed and key-backed
@@ -17,9 +18,11 @@ async function verifyRuntime(): Promise<void> {
   // integration suite against a disposable container.
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(PrismaService)
-    .useValue({})
+    .useValue({ attachment: { findMany: () => Promise.resolve([]) } })
     .overrideProvider(MfaCipherService)
     .useValue({ encrypt: () => '', decrypt: () => '' })
+    .overrideProvider(ATTACHMENTS_ROOT)
+    .useValue('/tmp/project-operations-runtime-smoke-attachments')
     .compile();
   const app = moduleRef.createNestApplication();
   app.setGlobalPrefix('api/v1');

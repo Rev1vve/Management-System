@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Req, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Header, Post, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 
 import { AuthService } from './auth.service';
@@ -26,6 +26,7 @@ export class AuthController {
   ) {}
 
   @Post('login')
+  @Header('Cache-Control', 'no-store')
   async login(@Body() body: LoginBody, @Res({ passthrough: true }) res: Response) {
     const result = await this.auth.login({
       accountOrEmail: body.accountOrEmail,
@@ -40,6 +41,7 @@ export class AuthController {
 
   @UseGuards(SessionGuard)
   @Get('me')
+  @Header('Cache-Control', 'no-store')
   async me(@Req() req: Request) {
     // SessionGuard attaches the user; the login endpoint already set the cookie.
     const { user } = req as unknown as {
@@ -52,11 +54,19 @@ export class AuthController {
         mfaEnabled: boolean;
       };
     };
-    return user;
+    return {
+      id: user.id,
+      account: user.account,
+      name: user.name,
+      workEmail: user.workEmail,
+      status: user.status,
+      mfaEnabled: user.mfaEnabled,
+    };
   }
 
   @UseGuards(SessionGuard)
   @Post('logout')
+  @Header('Cache-Control', 'no-store')
   async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const token = (req as { cookies?: Record<string, string> }).cookies?.[SESSION_COOKIE];
     if (token) {
@@ -68,6 +78,7 @@ export class AuthController {
 
   @UseGuards(SessionGuard)
   @Post('logout-all')
+  @Header('Cache-Control', 'no-store')
   async logoutAll(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const { user } = req as unknown as { user: { id: string } };
     await this.sessions.revokeAll(user.id);

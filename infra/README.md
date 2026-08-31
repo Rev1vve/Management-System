@@ -22,6 +22,23 @@ chmod 600 infra/secrets/local/dev-postgres-password.txt
 
 Edit `infra/env/dev.env` and set `POSTGRES_PASSWORD_FILE` to the absolute secret-file path. Pass backup locations explicitly with `--backup-dir`; backup scripts reject paths inside the repository. Local env files and secret values are ignored by Git.
 
+## Prepare production secrets
+
+The production API runs as `10001:10001`. Standalone Compose bind-mounted secrets retain their host ownership and mode, so both production secret files must be owned by root, readable only by runtime group `10001`, and unreadable by other users. PostgreSQL receives supplementary group `10001` but mounts only its own password secret.
+
+Create the files outside the repository, then apply and verify the least-privilege metadata:
+
+```bash
+sudo chown root:10001 /absolute/path/to/prod-postgres-password.txt \
+  /absolute/path/to/prod-mfa-secret-key.txt
+sudo chmod 0440 /absolute/path/to/prod-postgres-password.txt \
+  /absolute/path/to/prod-mfa-secret-key.txt
+test "$(stat -c '%U:%g:%a' /absolute/path/to/prod-postgres-password.txt)" = root:10001:440
+test "$(stat -c '%U:%g:%a' /absolute/path/to/prod-mfa-secret-key.txt)" = root:10001:440
+```
+
+Set both absolute paths in a private copy of `infra/env/prod.env.example`. Do not weaken either file to world-readable mode and do not place production secrets in the repository.
+
 ## Static checks
 
 ```bash

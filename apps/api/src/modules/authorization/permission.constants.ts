@@ -24,6 +24,7 @@ export const PERMISSIONS = {
   PROJECT_MANAGE: 'project:manage',
   WORKLOG_MANAGE: 'worklog:manage',
   PORTFOLIO_VIEW: 'portfolio:view',
+  PORTFOLIO_MANAGE: 'portfolio:manage',
   REPORT_VIEW: 'report:view',
   APPROVAL_DECIDE: 'approval:decide',
 } as const;
@@ -39,6 +40,7 @@ export const PERMISSION_DESCRIPTIONS: Record<PermissionKey, string> = {
   [PERMISSIONS.PROJECT_MANAGE]: '管理已分配项目',
   [PERMISSIONS.WORKLOG_MANAGE]: '管理工作日志（项目内）',
   [PERMISSIONS.PORTFOLIO_VIEW]: '查看项目集',
+  [PERMISSIONS.PORTFOLIO_MANAGE]: '管理所属项目集',
   [PERMISSIONS.REPORT_VIEW]: '查看报表',
   [PERMISSIONS.APPROVAL_DECIDE]: '审批决策',
 };
@@ -102,7 +104,12 @@ export const ROLE_DEFINITIONS: readonly RoleDefinition[] = [
     name: '项目总监',
     description: '跨项目查看与组合级报表',
     requiresMfa: true,
-    permissions: [PERMISSIONS.PROJECT_VIEW, PERMISSIONS.PORTFOLIO_VIEW, PERMISSIONS.REPORT_VIEW],
+    permissions: [
+      PERMISSIONS.PROJECT_VIEW,
+      PERMISSIONS.PORTFOLIO_VIEW,
+      PERMISSIONS.PORTFOLIO_MANAGE,
+      PERMISSIONS.REPORT_VIEW,
+    ],
   },
   {
     key: 'EXECUTIVE',

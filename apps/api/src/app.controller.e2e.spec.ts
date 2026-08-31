@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AppModule } from './app.module';
 import { PrismaService } from './database/prisma.service';
 import { MfaCipherService } from './crypto/mfa-cipher.service';
+import { ATTACHMENTS_ROOT } from './modules/attachments/attachments.service';
 
 describe('API root endpoint', () => {
   let app: INestApplication;
@@ -18,9 +19,11 @@ describe('API root endpoint', () => {
       // database-backed and key-backed providers are replaced with stubs so
       // the module compiles without a live PostgreSQL or MFA_SECRET_KEY.
       .overrideProvider(PrismaService)
-      .useValue({})
+      .useValue({ attachment: { findMany: () => Promise.resolve([]) } })
       .overrideProvider(MfaCipherService)
       .useValue({ encrypt: () => '', decrypt: () => '' })
+      .overrideProvider(ATTACHMENTS_ROOT)
+      .useValue('/tmp/project-operations-test-attachments')
       .compile();
     app = moduleRef.createNestApplication();
     app.setGlobalPrefix('api/v1');
@@ -28,7 +31,7 @@ describe('API root endpoint', () => {
   });
 
   afterAll(async () => {
-    await app.close();
+    await app?.close();
   });
 
   it('returns the service status through the Nest HTTP runtime', async () => {

@@ -6,7 +6,7 @@
     "build": "next build",
     "dev": "next dev --hostname 127.0.0.1 --port ${WEB_PORT:-3000}",
     "lint": "eslint .",
-    "start": "next start --hostname 127.0.0.1 --port ${WEB_PORT:-3000}",
+    "start": "next start --hostname ${HOSTNAME:-127.0.0.1} --port ${WEB_PORT:-3000}",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

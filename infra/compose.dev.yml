@@ -50,6 +50,7 @@ services:
     image: alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
     profiles:
       - maintenance
+    user: '0:0'
     command:
       - sh
       - -eu
@@ -68,6 +69,7 @@ services:
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
+      target: db-tools
     profiles:
       - tools
     environment:

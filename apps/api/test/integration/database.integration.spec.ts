@@ -257,6 +257,29 @@ describe('task 4 data model', () => {
       expect(found).not.toBeNull();
       expect(found?.deletedAt).not.toBeNull();
     });
+
+    it('preserves archived customer contacts while excluding them from active reads', async () => {
+      const customer = await prisma.customer.create({
+        data: { number: 'CUST-CONTACT-ARCHIVE', name: 'contact archive' },
+      });
+      const contact = await prisma.customerContact.create({
+        data: { customerId: customer.id, name: 'Archived contact', isPrimary: true },
+      });
+      const archivedAt = new Date('2026-08-22T08:00:00.000Z');
+
+      await prisma.customerContact.update({
+        where: { id: contact.id },
+        data: { archivedAt },
+      });
+
+      await expect(
+        prisma.customerContact.count({
+          where: { customerId: customer.id, archivedAt: null },
+        }),
+      ).resolves.toBe(0);
+      const retained = await prisma.customerContact.findUnique({ where: { id: contact.id } });
+      expect(retained?.archivedAt?.toISOString()).toBe(archivedAt.toISOString());
+    });
   });
 
   describe('version field', () => {

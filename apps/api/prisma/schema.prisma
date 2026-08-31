@@ -108,6 +108,7 @@ enum ProjectRole {
 }
 
 enum AttachmentStatus {
+  PENDING
   ACTIVE
   ARCHIVED
 }
@@ -130,55 +131,55 @@ enum EmailStatus {
 // ---------------------------------------------------------------------------
 
 model User {
-  id           String     @id @default(uuid())
-  account      String     @unique @map("account")
-  name         String     @map("name")
-  workEmail    String     @unique @map("work_email")
-  status       UserStatus @default(INVITED)
-  passwordHash String?    @map("password_hash")
-  mfaEnabled   Boolean    @default(false) @map("mfa_enabled")
+  id                  String     @id @default(uuid())
+  account             String     @unique @map("account")
+  name                String     @map("name")
+  workEmail           String     @unique @map("work_email")
+  status              UserStatus @default(INVITED)
+  passwordHash        String?    @map("password_hash")
+  mfaEnabled          Boolean    @default(false) @map("mfa_enabled")
   // Encrypted TOTP secret (AES-256-GCM); plaintext secret never stored.
-  mfaSecretCiphertext String?  @map("mfa_secret_ciphertext")
+  mfaSecretCiphertext String?    @map("mfa_secret_ciphertext")
   // Login throttling state (survives process restarts; no Redis needed).
-  failedLoginCount Int        @default(0) @map("failed_login_count")
-  lockedUntil      DateTime?  @map("locked_until") @db.Timestamptz(3)
+  failedLoginCount    Int        @default(0) @map("failed_login_count")
+  lockedUntil         DateTime?  @map("locked_until") @db.Timestamptz(3)
   // MFA challenge throttling (step two of login); independent of the
   // password-step counters so the two lockouts cannot cancel each other.
-  mfaFailedAttempts Int       @default(0) @map("mfa_failed_attempts")
-  mfaLockedUntil    DateTime? @map("mfa_locked_until") @db.Timestamptz(3)
-  lastLoginAt  DateTime?  @map("last_login_at") @db.Timestamptz(3)
-  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt    DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
-  deletedAt    DateTime?  @map("deleted_at") @db.Timestamptz(3)
+  mfaFailedAttempts   Int        @default(0) @map("mfa_failed_attempts")
+  mfaLockedUntil      DateTime?  @map("mfa_locked_until") @db.Timestamptz(3)
+  lastLoginAt         DateTime?  @map("last_login_at") @db.Timestamptz(3)
+  createdAt           DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt           DateTime?  @map("deleted_at") @db.Timestamptz(3)
 
-  invitations           Invitation[]          @relation("InvitationCreatedBy")
-  sessions              Session[]
-  mfaRecoveryCodes      MfaRecoveryCode[]
-  systemRoles           UserSystemRole[]
-  projectMemberships    ProjectMembership[]
-  portfolioMemberships  PortfolioMembership[]
-  workLogs              WorkLog[]
-  submittedWorkLogVersions WorkLogVersion[]
-  approvalRequestsAsApprover  ApprovalRequest[]  @relation("ApprovalApprover")
-  approvalRequestsAsSubmitter ApprovalRequest[]  @relation("ApprovalSubmitter")
-  approvalDecisions     ApprovalDecision[]
-  projectEvents         ProjectEvent[]
-  attachments           Attachment[]
-  notifications         Notification[]
-  auditLogs             AuditLog[]
+  invitations                 Invitation[]          @relation("InvitationCreatedBy")
+  sessions                    Session[]
+  mfaRecoveryCodes            MfaRecoveryCode[]
+  systemRoles                 UserSystemRole[]
+  projectMemberships          ProjectMembership[]
+  portfolioMemberships        PortfolioMembership[]
+  workLogs                    WorkLog[]
+  submittedWorkLogVersions    WorkLogVersion[]
+  approvalRequestsAsApprover  ApprovalRequest[]     @relation("ApprovalApprover")
+  approvalRequestsAsSubmitter ApprovalRequest[]     @relation("ApprovalSubmitter")
+  approvalDecisions           ApprovalDecision[]
+  projectEvents               ProjectEvent[]
+  attachments                 Attachment[]
+  notifications               Notification[]
+  auditLogs                   AuditLog[]
 
   @@map("users")
 }
 
 model Invitation {
-  id         String           @id @default(uuid())
-  email      String           @map("email")
-  tokenHash  String           @unique @map("token_hash")
-  status     InvitationStatus @default(PENDING)
-  expiresAt  DateTime         @map("expires_at") @db.Timestamptz(3)
-  acceptedAt DateTime?        @map("accepted_at") @db.Timestamptz(3)
-  createdById String          @map("created_by_id")
-  createdAt  DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  id          String           @id @default(uuid())
+  email       String           @map("email")
+  tokenHash   String           @unique @map("token_hash")
+  status      InvitationStatus @default(PENDING)
+  expiresAt   DateTime         @map("expires_at") @db.Timestamptz(3)
+  acceptedAt  DateTime?        @map("accepted_at") @db.Timestamptz(3)
+  createdById String           @map("created_by_id")
+  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
 
   createdBy User @relation("InvitationCreatedBy", fields: [createdById], references: [id])
 
@@ -187,15 +188,15 @@ model Invitation {
 }
 
 model Session {
-  id           String        @id @default(uuid())
-  userId       String        @map("user_id")
-  tokenHash    String        @unique @map("token_hash")
-  status       SessionStatus @default(PENDING_MFA)
-  deviceInfo   String?       @map("device_info")
-  lastUsedAt   DateTime?     @map("last_used_at") @db.Timestamptz(3)
-  expiresAt    DateTime      @map("expires_at") @db.Timestamptz(3)
-  revokedAt    DateTime?     @map("revoked_at") @db.Timestamptz(3)
-  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  id         String        @id @default(uuid())
+  userId     String        @map("user_id")
+  tokenHash  String        @unique @map("token_hash")
+  status     SessionStatus @default(PENDING_MFA)
+  deviceInfo String?       @map("device_info")
+  lastUsedAt DateTime?     @map("last_used_at") @db.Timestamptz(3)
+  expiresAt  DateTime      @map("expires_at") @db.Timestamptz(3)
+  revokedAt  DateTime?     @map("revoked_at") @db.Timestamptz(3)
+  createdAt  DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
 
   user User @relation(fields: [userId], references: [id])
 
@@ -228,7 +229,7 @@ model SystemRole {
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  userRoles UserSystemRole[]
+  userRoles       UserSystemRole[]
   rolePermissions RolePermission[]
 
   @@map("system_roles")
@@ -274,8 +275,8 @@ model ProjectMembership {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  user    User                  @relation(fields: [userId], references: [id])
-  project Project               @relation(fields: [projectId], references: [id])
+  user    User                    @relation(fields: [userId], references: [id])
+  project Project                 @relation(fields: [projectId], references: [id])
   roles   ProjectMembershipRole[]
 
   @@unique([userId, projectId])
@@ -312,32 +313,34 @@ model PortfolioMembership {
 // ---------------------------------------------------------------------------
 
 model Customer {
-  id         String         @id @default(uuid())
-  number     String         @unique @map("number")
-  name       String         @map("name")
-  status     CustomerStatus @default(ACTIVE)
-  notes      String?        @map("notes")
-  version    Int            @default(1)
-  createdAt  DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt  DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
-  deletedAt  DateTime?      @map("deleted_at") @db.Timestamptz(3)
+  id        String         @id @default(uuid())
+  number    String         @unique @map("number")
+  name      String         @map("name")
+  status    CustomerStatus @default(ACTIVE)
+  notes     String?        @map("notes")
+  version   Int            @default(1)
+  createdAt DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt DateTime?      @map("deleted_at") @db.Timestamptz(3)
 
-  contacts CustomerContact[]
-  projects Project[]
+  contacts    CustomerContact[]
+  projects    Project[]
+  attachments Attachment[]
 
   @@map("customers")
 }
 
 model CustomerContact {
-  id         String   @id @default(uuid())
-  customerId String   @map("customer_id")
-  name       String   @map("name")
-  workEmail  String?  @map("work_email")
-  phone      String?  @map("phone")
-  position   String?  @map("position")
-  isPrimary  Boolean  @default(false) @map("is_primary")
-  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id         String    @id @default(uuid())
+  customerId String    @map("customer_id")
+  name       String    @map("name")
+  workEmail  String?   @map("work_email")
+  phone      String?   @map("phone")
+  position   String?   @map("position")
+  isPrimary  Boolean   @default(false) @map("is_primary")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz(3)
 
   customer Customer @relation(fields: [customerId], references: [id])
 
@@ -346,13 +349,13 @@ model CustomerContact {
 }
 
 model Portfolio {
-  id         String          @id @default(uuid())
-  name       String          @map("name")
-  description String?        @map("description")
-  status     PortfolioStatus @default(ACTIVE)
-  createdAt  DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt  DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
-  deletedAt  DateTime?       @map("deleted_at") @db.Timestamptz(3)
+  id          String          @id @default(uuid())
+  name        String          @map("name")
+  description String?         @map("description")
+  status      PortfolioStatus @default(ACTIVE)
+  createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt   DateTime?       @map("deleted_at") @db.Timestamptz(3)
 
   memberships PortfolioMembership[]
   projects    Project[]
@@ -361,20 +364,20 @@ model Portfolio {
 }
 
 model Project {
-  id               String        @id @default(uuid())
-  number           String        @unique @map("number")
-  name             String        @map("name")
-  customerId       String?       @map("customer_id")
-  portfolioId      String?       @map("portfolio_id")
-  description      String?       @map("description")
-  startDate        DateTime?     @map("start_date") @db.Date
-  endDate          DateTime?     @map("end_date") @db.Date
-  status           ProjectStatus @default(DRAFT)
-  completionPercent Int          @default(0) @map("completion_percent")
-  version          Int           @default(1)
-  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
-  deletedAt        DateTime?     @map("deleted_at") @db.Timestamptz(3)
+  id                String        @id @default(uuid())
+  number            String        @unique @map("number")
+  name              String        @map("name")
+  customerId        String?       @map("customer_id")
+  portfolioId       String?       @map("portfolio_id")
+  description       String?       @map("description")
+  startDate         DateTime?     @map("start_date") @db.Date
+  endDate           DateTime?     @map("end_date") @db.Date
+  status            ProjectStatus @default(DRAFT)
+  completionPercent Int           @default(0) @map("completion_percent")
+  version           Int           @default(1)
+  createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt         DateTime?     @map("deleted_at") @db.Timestamptz(3)
 
   customer    Customer?           @relation(fields: [customerId], references: [id])
   portfolio   Portfolio?          @relation(fields: [portfolioId], references: [id])
@@ -402,8 +405,8 @@ model Order {
   updatedAt    DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
   deletedAt    DateTime?   @map("deleted_at") @db.Timestamptz(3)
 
-  project Project     @relation(fields: [projectId], references: [id])
-  items   OrderItem[]
+  project  Project     @relation(fields: [projectId], references: [id])
+  items    OrderItem[]
   workLogs WorkLog[]
 
   @@index([projectId])
@@ -419,11 +422,11 @@ model OrderItem {
   plannedDate   DateTime?       @map("planned_date") @db.Date
   completedDate DateTime?       @map("completed_date") @db.Date
   status        OrderItemStatus @default(PENDING)
-  sortOrder     Int            @default(0) @map("sort_order")
-  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt     DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+  sortOrder     Int             @default(0) @map("sort_order")
+  createdAt     DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  order    Order      @relation(fields: [orderId], references: [id])
+  order    Order     @relation(fields: [orderId], references: [id])
   workLogs WorkLog[]
 
   @@index([orderId])
@@ -435,26 +438,26 @@ model OrderItem {
 // ---------------------------------------------------------------------------
 
 model WorkLog {
-  id           String           @id @default(uuid())
-  number       String           @unique @map("number")
-  authorId     String           @map("author_id")
-  projectId    String           @map("project_id")
-  orderId      String?          @map("order_id")
-  orderItemId  String?          @map("order_item_id")
-  currentVersionId String?       @unique @map("current_version_id")
-  status       WorkLogStatus    @default(DRAFT)
-  visibility   WorkLogVisibility @default(PRIVATE)
-  version      Int              @default(1)
-  createdAt    DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt    DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
-  deletedAt    DateTime?        @map("deleted_at") @db.Timestamptz(3)
+  id               String            @id @default(uuid())
+  number           String            @unique @map("number")
+  authorId         String            @map("author_id")
+  projectId        String            @map("project_id")
+  orderId          String?           @map("order_id")
+  orderItemId      String?           @map("order_item_id")
+  currentVersionId String?           @unique @map("current_version_id")
+  status           WorkLogStatus     @default(DRAFT)
+  visibility       WorkLogVisibility @default(PRIVATE)
+  version          Int               @default(1)
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt        DateTime?         @map("deleted_at") @db.Timestamptz(3)
 
-  author          User             @relation(fields: [authorId], references: [id])
-  project         Project          @relation(fields: [projectId], references: [id])
-  order           Order?           @relation(fields: [orderId], references: [id])
-  orderItem       OrderItem?       @relation(fields: [orderItemId], references: [id])
-  currentVersion  WorkLogVersion?  @relation("WorkLogCurrentVersion", fields: [currentVersionId], references: [id])
-  versions        WorkLogVersion[] @relation("WorkLogVersions")
+  author         User             @relation(fields: [authorId], references: [id])
+  project        Project          @relation(fields: [projectId], references: [id])
+  order          Order?           @relation(fields: [orderId], references: [id])
+  orderItem      OrderItem?       @relation(fields: [orderItemId], references: [id])
+  currentVersion WorkLogVersion?  @relation("WorkLogCurrentVersion", fields: [currentVersionId], references: [id])
+  versions       WorkLogVersion[] @relation("WorkLogVersions")
 
   @@index([authorId])
   @@index([projectId])
@@ -474,9 +477,9 @@ model WorkLogVersion {
   submittedAt   DateTime @default(now()) @map("submitted_at") @db.Timestamptz(3)
   createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  workLog      WorkLog          @relation("WorkLogVersions", fields: [workLogId], references: [id])
-  submittedBy  User             @relation(fields: [submittedById], references: [id])
-  currentFor   WorkLog?         @relation("WorkLogCurrentVersion")
+  workLog          WorkLog           @relation("WorkLogVersions", fields: [workLogId], references: [id])
+  submittedBy      User              @relation(fields: [submittedById], references: [id])
+  currentFor       WorkLog?          @relation("WorkLogCurrentVersion")
   approvalRequests ApprovalRequest[]
 
   @@unique([workLogId, versionNumber])
@@ -485,18 +488,18 @@ model WorkLogVersion {
 }
 
 model ApprovalRequest {
-  id                String         @id @default(uuid())
-  workLogVersionId  String         @map("work_log_version_id")
-  approverId        String         @map("approver_id")
-  submitterId       String         @map("submitter_id")
-  status            ApprovalStatus @default(PENDING)
-  submittedAt       DateTime       @default(now()) @map("submitted_at") @db.Timestamptz(3)
-  processedAt       DateTime?      @map("processed_at") @db.Timestamptz(3)
-  createdAt         DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  id               String         @id @default(uuid())
+  workLogVersionId String         @map("work_log_version_id")
+  approverId       String         @map("approver_id")
+  submitterId      String         @map("submitter_id")
+  status           ApprovalStatus @default(PENDING)
+  submittedAt      DateTime       @default(now()) @map("submitted_at") @db.Timestamptz(3)
+  processedAt      DateTime?      @map("processed_at") @db.Timestamptz(3)
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  workLogVersion WorkLogVersion    @relation(fields: [workLogVersionId], references: [id])
-  approver       User              @relation("ApprovalApprover", fields: [approverId], references: [id])
-  submitter      User              @relation("ApprovalSubmitter", fields: [submitterId], references: [id])
+  workLogVersion WorkLogVersion     @relation(fields: [workLogVersionId], references: [id])
+  approver       User               @relation("ApprovalApprover", fields: [approverId], references: [id])
+  submitter      User               @relation("ApprovalSubmitter", fields: [submitterId], references: [id])
   decisions      ApprovalDecision[]
 
   @@unique([workLogVersionId])
@@ -505,12 +508,12 @@ model ApprovalRequest {
 }
 
 model ApprovalDecision {
-  id                String           @id @default(uuid())
-  approvalRequestId String           @map("approval_request_id")
+  id                String               @id @default(uuid())
+  approvalRequestId String               @map("approval_request_id")
   decision          ApprovalDecisionType
-  comment           String?          @map("comment")
-  decidedById       String           @map("decided_by_id")
-  decidedAt         DateTime         @default(now()) @map("decided_at") @db.Timestamptz(3)
+  comment           String?              @map("comment")
+  decidedById       String               @map("decided_by_id")
+  decidedAt         DateTime             @default(now()) @map("decided_at") @db.Timestamptz(3)
 
   approvalRequest ApprovalRequest @relation(fields: [approvalRequestId], references: [id])
   decidedBy       User            @relation(fields: [decidedById], references: [id])
@@ -539,24 +542,35 @@ model ProjectEvent {
 // ---------------------------------------------------------------------------
 
 model Attachment {
-  id           String           @id @default(uuid())
-  storageKey   String           @unique @map("storage_key")
-  originalName String           @map("original_name")
-  mimeType     String           @map("mime_type")
-  sizeBytes    Int              @map("size_bytes")
-  sha256       String           @map("sha256")
-  uploadedById String           @map("uploaded_by_id")
-  resourceType String           @map("resource_type")
-  resourceId   String           @map("resource_id")
-  status       AttachmentStatus @default(ACTIVE)
-  createdAt    DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt    DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
-  deletedAt    DateTime?        @map("deleted_at") @db.Timestamptz(3)
+  id                      String           @id @default(uuid())
+  storageKey              String           @unique @map("storage_key")
+  originalName            String           @map("original_name")
+  mimeType                String           @map("mime_type")
+  sizeBytes               Int              @map("size_bytes")
+  sha256                  String           @map("sha256")
+  uploadedById            String           @map("uploaded_by_id")
+  resourceType            String           @map("resource_type")
+  resourceId              String           @map("resource_id")
+  customerId              String?          @map("customer_id")
+  status                  AttachmentStatus @default(ACTIVE)
+  createdAt               DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt               DateTime         @updatedAt @map("updated_at") @db.Timestamptz(3)
+  deletedAt               DateTime?        @map("deleted_at") @db.Timestamptz(3)
+  storagePublishedAt      DateTime?        @map("storage_published_at") @db.Timestamptz(3)
+  storageDevice           BigInt?          @map("storage_device")
+  storageInode            BigInt?          @map("storage_inode")
+  storageDeletedAt        DateTime?        @map("storage_deleted_at") @db.Timestamptz(3)
+  storageCleanupAttempts  Int              @default(0) @map("storage_cleanup_attempts")
+  storageCleanupLastError String?          @map("storage_cleanup_last_error")
 
-  uploadedBy User @relation(fields: [uploadedById], references: [id])
+  uploadedBy User      @relation(fields: [uploadedById], references: [id])
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: Restrict, onUpdate: Cascade)
 
   @@index([uploadedById])
+  @@index([customerId])
   @@index([resourceType, resourceId])
+  @@index([status, storageDeletedAt, storageCleanupAttempts], map: "attachments_cleanup_pending_idx")
+  @@index([status, storagePublishedAt, storageCleanupAttempts], map: "attachments_upload_pending_idx")
   @@map("attachments")
 }
 
@@ -579,17 +593,17 @@ model Notification {
 }
 
 model EmailOutbox {
-  id           String      @id @default(uuid())
-  toAddress    String      @map("to_address")
-  subject      String      @map("subject")
-  body         String      @map("body")
-  status       EmailStatus @default(PENDING)
-  retryCount   Int         @default(0) @map("retry_count")
-  nextRetryAt  DateTime?   @map("next_retry_at") @db.Timestamptz(3)
-  lastError    String?     @map("last_error")
-  sentAt       DateTime?   @map("sent_at") @db.Timestamptz(3)
-  createdAt    DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt    DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id          String      @id @default(uuid())
+  toAddress   String      @map("to_address")
+  subject     String      @map("subject")
+  body        String      @map("body")
+  status      EmailStatus @default(PENDING)
+  retryCount  Int         @default(0) @map("retry_count")
+  nextRetryAt DateTime?   @map("next_retry_at") @db.Timestamptz(3)
+  lastError   String?     @map("last_error")
+  sentAt      DateTime?   @map("sent_at") @db.Timestamptz(3)
+  createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   @@index([status, nextRetryAt])
   @@map("email_outbox")

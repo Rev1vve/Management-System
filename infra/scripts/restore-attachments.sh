@@ -52,6 +52,15 @@ compose --profile maintenance run --rm --no-deps -T attachments-maintenance \
     cleanup() { rm -rf "$staging"; }
     trap cleanup EXIT
     tar -xzf - -C "$staging"
+    unsafe_entry="$(find "$staging" -mindepth 1 ! -type d ! -type f -print -quit)"
+    if [ -n "$unsafe_entry" ]; then
+      echo "UNSAFE_ATTACHMENT_ENTRY" >&2
+      exit 1
+    fi
+    find "$staging" -type d -exec chown 10001:10001 {} +
+    find "$staging" -type d -exec chmod 0700 {} +
+    find "$staging" -type f -exec chown 10001:10001 {} +
+    find "$staging" -type f -exec chmod 0600 {} +
     find /srv/attachments -mindepth 1 -maxdepth 1 ! -path "$staging" -exec rm -rf -- {} \;
     find "$staging" -mindepth 1 -maxdepth 1 -exec mv -- {} /srv/attachments/ \;
     rmdir "$staging"

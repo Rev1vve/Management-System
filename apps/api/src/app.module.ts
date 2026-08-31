@@ -8,9 +8,26 @@ import { UsersModule } from './modules/users/users.module';
 import { SessionsModule } from './modules/sessions/sessions.module';
 import { MfaModule } from './modules/mfa/mfa.module';
 import { AuditModule } from './modules/audit/audit.module';
+import { AttachmentsModule } from './modules/attachments/attachments.module';
+import { CustomersModule } from './modules/customers/customers.module';
+import { OrdersModule } from './modules/orders/orders.module';
+import { PortfoliosModule } from './modules/portfolios/portfolios.module';
+import { ProjectsModule } from './modules/projects/projects.module';
 
 @Module({
-  imports: [DatabaseModule, AuthModule, UsersModule, SessionsModule, MfaModule, AuditModule],
+  imports: [
+    DatabaseModule,
+    AuthModule,
+    UsersModule,
+    SessionsModule,
+    MfaModule,
+    AuditModule,
+    CustomersModule,
+    PortfoliosModule,
+    ProjectsModule,
+    OrdersModule,
+    AttachmentsModule,
+  ],
   controllers: [AppController],
   providers: [AppService],
 })

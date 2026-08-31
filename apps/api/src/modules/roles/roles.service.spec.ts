@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { RolesService } from './roles.service';
 import { PrismaService } from '../../database/prisma.service';
-import { PERMISSIONS } from '../authorization/permission.constants';
+import { PERMISSIONS, ROLE_DEFINITIONS } from '../authorization/permission.constants';
 
 /**
  * Unit tests for RolesService.listUserPermissions: union semantics across
@@ -74,6 +74,13 @@ describe('RolesService.listUserPermissions', () => {
     const { service } = makeService(async () => [membership([])]);
 
     await expect(service.listUserPermissions('u5')).resolves.toEqual([]);
+  });
+
+  it('grants portfolio:manage only to PORTFOLIO_DIRECTOR and never ADMIN', () => {
+    const director = ROLE_DEFINITIONS.find((role) => role.key === 'PORTFOLIO_DIRECTOR')!;
+    const admin = ROLE_DEFINITIONS.find((role) => role.key === 'ADMIN')!;
+    expect(director.permissions).toContain(PERMISSIONS.PORTFOLIO_MANAGE);
+    expect(admin.permissions).not.toContain(PERMISSIONS.PORTFOLIO_MANAGE);
   });
 
   it('filters by the requested user id', async () => {

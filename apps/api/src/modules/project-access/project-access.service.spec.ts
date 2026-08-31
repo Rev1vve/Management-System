@@ -14,12 +14,14 @@ function makeService(overrides: {
   project?: unknown;
   membership?: unknown;
   memberships?: unknown[];
+  findMany?: ReturnType<typeof vi.fn>;
 }): ProjectAccessService {
   const prisma = {
     project: { findUnique: vi.fn(async () => overrides.project ?? null) },
     projectMembership: {
       findUnique: vi.fn(async () => overrides.membership ?? null),
-      findMany: vi.fn(async () => overrides.memberships ?? []),
+      findFirst: vi.fn(async () => overrides.membership ?? null),
+      findMany: overrides.findMany ?? vi.fn(async () => overrides.memberships ?? []),
     },
   } as unknown as PrismaService;
   return new ProjectAccessService(prisma);
@@ -63,13 +65,29 @@ describe('ProjectAccessService.assertProjectAccess', () => {
   });
 
   it('throws 404 for a non-member (same response as missing project)', async () => {
-    const service = makeService({ project: { id: 'p1' }, membership: null });
+    const service = makeService({ project: { id: 'p1', deletedAt: null }, membership: null });
+    await expect(service.assertProjectAccess('u1', 'p1')).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('throws 404 for an archived project even when the user is a member', async () => {
+    const service = makeService({
+      project: { id: 'p1', status: 'ARCHIVED', deletedAt: new Date('2026-08-22T00:00:00.000Z') },
+      membership: { id: 'm1', roles: [{ role: 'PROJECT_MANAGER' }] },
+    });
+    await expect(service.assertProjectAccess('u1', 'p1')).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('throws 404 for an archived project whose deletedAt is unexpectedly null', async () => {
+    const service = makeService({
+      project: { id: 'p1', status: 'ARCHIVED', deletedAt: null },
+      membership: { id: 'm1', roles: [{ role: 'PROJECT_MANAGER' }] },
+    });
     await expect(service.assertProjectAccess('u1', 'p1')).rejects.toBeInstanceOf(NotFoundException);
   });
 
   it('resolves roles for a member', async () => {
     const service = makeService({
-      project: { id: 'p1' },
+      project: { id: 'p1', deletedAt: null },
       membership: { id: 'm1', roles: [{ role: 'PROJECT_MANAGER' }] },
     });
     await expect(service.assertProjectAccess('u1', 'p1')).resolves.toEqual({
@@ -81,7 +99,7 @@ describe('ProjectAccessService.assertProjectAccess', () => {
 describe('ProjectAccessService.assertProjectRole', () => {
   it('allows when the user holds one of the required roles', async () => {
     const service = makeService({
-      project: { id: 'p1' },
+      project: { id: 'p1', deletedAt: null },
       membership: { id: 'm1', roles: [{ role: 'MEMBER' }] },
     });
     await expect(
@@ -91,7 +109,7 @@ describe('ProjectAccessService.assertProjectRole', () => {
 
   it('throws 403 when the user is a member but lacks every required role', async () => {
     const service = makeService({
-      project: { id: 'p1' },
+      project: { id: 'p1', deletedAt: null },
       membership: { id: 'm1', roles: [{ role: 'MEMBER' }] },
     });
     await expect(service.assertProjectRole('u1', 'p1', ['PROJECT_MANAGER'])).rejects.toBeInstanceOf(
@@ -100,8 +118,18 @@ describe('ProjectAccessService.assertProjectRole', () => {
   });
 
   it('throws 404 (not 403) for a non-member: role checks never leak existence', async () => {
-    const service = makeService({ project: { id: 'p1' }, membership: null });
+    const service = makeService({ project: { id: 'p1', deletedAt: null }, membership: null });
     await expect(service.assertProjectRole('u1', 'p1', ['MEMBER'])).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+  });
+
+  it('throws 404 for an archived project even when the user has the required role', async () => {
+    const service = makeService({
+      project: { id: 'p1', deletedAt: new Date('2026-08-22T00:00:00.000Z') },
+      membership: { id: 'm1', roles: [{ role: 'PROJECT_MANAGER' }] },
+    });
+    await expect(service.assertProjectRole('u1', 'p1', ['PROJECT_MANAGER'])).rejects.toBeInstanceOf(
       NotFoundException,
     );
   });
@@ -118,5 +146,16 @@ describe('ProjectAccessService.resolveProjectScope', () => {
   it('returns [] for a user with no memberships', async () => {
     const service = makeService({ memberships: [] });
     await expect(service.resolveProjectScope('u1')).resolves.toEqual([]);
+  });
+
+  it('restricts the scope query to memberships of active projects', async () => {
+    const findMany = vi.fn().mockResolvedValue([{ projectId: 'active-project' }]);
+    const service = makeService({ findMany });
+
+    await expect(service.resolveProjectScope('u1')).resolves.toEqual(['active-project']);
+    expect(findMany).toHaveBeenCalledWith({
+      where: { userId: 'u1', project: { status: { not: 'ARCHIVED' }, deletedAt: null } },
+      select: { projectId: true },
+    });
   });
 });

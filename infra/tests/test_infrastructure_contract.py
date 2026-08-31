@@ -105,6 +105,7 @@ class InfrastructureContractTests(unittest.TestCase):
                 maintenance = config["services"]["attachments-maintenance"]
                 self.assertRegex(maintenance["image"], r"@sha256:[0-9a-f]{64}$")
                 self.assertEqual(maintenance.get("network_mode"), "none")
+                self.assertEqual(maintenance.get("user"), "0:0")
                 volume_sources = {volume["source"] for volume in maintenance["volumes"]}
                 self.assertIn("attachments_data", volume_sources)
                 self.assertIn("attachments_data", config["volumes"])
@@ -115,11 +116,186 @@ class InfrastructureContractTests(unittest.TestCase):
                     for port in mailpit.get("ports", []):
                         self.assertEqual(port.get("host_ip"), "127.0.0.1")
                 else:
+                    api = config["services"]["api"]
+                    self.assertEqual(api["environment"]["ATTACHMENTS_ROOT"], "/srv/attachments")
+                    self.assertEqual(api.get("user"), "10001:10001")
+                    api_volume_sources = {volume["source"] for volume in api["volumes"]}
+                    self.assertIn("attachments_data", api_volume_sources)
+                    self.assertEqual(
+                        api["depends_on"]["attachments-init"]["condition"],
+                        "service_completed_successfully",
+                    )
+                    initializer = config["services"]["attachments-init"]
+                    self.assertEqual(initializer.get("user"), "0:0")
+                    self.assertEqual(initializer.get("network_mode"), "none")
+                    initializer_volume_sources = {
+                        volume["source"] for volume in initializer["volumes"]
+                    }
+                    self.assertIn("attachments_data", initializer_volume_sources)
+                    initializer_command = " ".join(initializer["command"])
+                    self.assertIn("install -d -o 10001 -g 10001 -m 0700", initializer_command)
+                    self.assertIn("UNSAFE_ATTACHMENT_ENTRY", initializer_command)
+                    self.assertIn("-type d -exec chown 10001:10001", initializer_command)
+                    self.assertIn("-type d -exec chmod 0700", initializer_command)
+                    self.assertIn("-type f -exec chown 10001:10001", initializer_command)
+                    self.assertIn("-type f -exec chmod 0600", initializer_command)
                     caddy = config["services"]["caddy"]
                     self.assertRegex(caddy["image"], r"@sha256:[0-9a-f]{64}$")
                     self.assertTrue(caddy.get("ports"), "production reverse proxy needs a loopback port")
                     for port in caddy["ports"]:
                         self.assertEqual(port.get("host_ip"), "127.0.0.1")
+
+    def test_production_web_process_listens_on_compose_network(self) -> None:
+        package = json.loads((ROOT / "apps" / "web" / "package.json").read_text(encoding="utf-8"))
+        start = package["scripts"]["start"]
+        self.assertIn(
+            "${HOSTNAME:-127.0.0.1}",
+            start,
+            "the production web process must honor Compose HOSTNAME so Caddy can reach it",
+        )
+        production = (INFRA / "compose.prod.yml").read_text(encoding="utf-8")
+        self.assertIn("HOSTNAME: 0.0.0.0", production)
+
+    def test_api_tools_image_installs_openssl_for_prisma(self) -> None:
+        dockerfile = (ROOT / "apps" / "api" / "Dockerfile").read_text(encoding="utf-8")
+        self.assertRegex(
+            dockerfile,
+            r"apt-get install[^\n]*openssl",
+            "Prisma's Debian tools image must install OpenSSL explicitly",
+        )
+
+    def test_quality_serializes_api_tasks_that_generate_the_same_prisma_client(self) -> None:
+        package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+        quality = package["scripts"]["quality"]
+        self.assertIn(
+            "turbo run lint typecheck test --concurrency=1",
+            quality,
+            "API test and typecheck both run prisma generate into one ignored directory",
+        )
+
+    def test_api_production_image_is_built_from_minimal_reviewed_runtime_stage(self) -> None:
+        dockerfile = (ROOT / "apps" / "api" / "Dockerfile").read_text(encoding="utf-8")
+        production = (INFRA / "compose.prod.yml").read_text(encoding="utf-8")
+        self.assertRegex(dockerfile, r"(?m)^FROM .+ AS api-runtime$")
+        self.assertIn("USER 10001:10001", dockerfile)
+        self.assertRegex(dockerfile, r"apt-get install[^\n]*coreutils")
+        self.assertIn("test -x /usr/bin/mv", dockerfile)
+        self.assertIn(
+            "pnpm install --filter @project-operations/api... --frozen-lockfile",
+            dockerfile,
+        )
+        self.assertNotRegex(dockerfile, r"(?m)^RUN pnpm install --frozen-lockfile$")
+        self.assertIn(
+            "pnpm --filter @project-operations/api deploy --prod --legacy /runtime/api",
+            dockerfile,
+        )
+        self.assertRegex(dockerfile, r"(?m)^FROM api-build AS api-deploy$")
+        self.assertNotIn("COPY --from=api-build /workspace /workspace", dockerfile)
+        self.assertIn("COPY --from=api-deploy /runtime/api/node_modules ./node_modules", dockerfile)
+        self.assertIn("COPY --from=api-build /workspace/apps/api/dist ./dist", dockerfile)
+        self.assertIn("COPY --from=api-build /workspace/apps/api/package.json ./package.json", dockerfile)
+        self.assertIn(
+            "COPY --from=api-build /workspace/apps/api/docker/db-tools-entrypoint.sh ./docker/db-tools-entrypoint.sh",
+            dockerfile,
+        )
+        self.assertIn('CMD ["node", "dist/main.js"]', dockerfile)
+        self.assertIn("dockerfile: apps/api/Dockerfile", production)
+        self.assertIn("target: api-runtime", production)
+
+    def test_attachment_restore_reapplies_private_runtime_ownership_and_modes(self) -> None:
+        restore = (INFRA / "scripts" / "restore-attachments.sh").read_text(encoding="utf-8")
+        self.assertIn("UNSAFE_ATTACHMENT_ENTRY", restore)
+        self.assertIn("-type d -exec chown 10001:10001", restore)
+        self.assertIn("-type d -exec chmod 0700", restore)
+        self.assertIn("-type f -exec chown 10001:10001", restore)
+        self.assertIn("-type f -exec chmod 0600", restore)
+
+    def test_attachment_cleanup_migration_is_explicitly_atomic(self) -> None:
+        migration = (
+            ROOT
+            / "apps"
+            / "api"
+            / "prisma"
+            / "migrations"
+            / "20260823000004_attachment_storage_cleanup"
+            / "migration.sql"
+        ).read_text(encoding="utf-8")
+        executable = "\n".join(
+            line for line in migration.splitlines() if line.strip() and not line.lstrip().startswith("--")
+        )
+        self.assertTrue(executable.startswith("BEGIN;\n"))
+        self.assertTrue(executable.endswith("\nCOMMIT;"))
+        self.assertEqual(executable.count("BEGIN;"), 1)
+        self.assertEqual(executable.count("COMMIT;"), 1)
+
+    def test_attachment_identity_migration_rejects_legacy_rows(self) -> None:
+        migration = (
+            ROOT
+            / "apps"
+            / "api"
+            / "prisma"
+            / "migrations"
+            / "20260823000004_attachment_storage_cleanup"
+            / "migration.sql"
+        ).read_text(encoding="utf-8")
+        guard = migration.index('IF EXISTS (SELECT 1 FROM "attachments")')
+        alter = migration.index('ALTER TABLE "attachments"')
+        self.assertLess(guard, alter)
+        self.assertIn("RAISE EXCEPTION", migration)
+
+    def test_customer_contract_attachments_have_a_fail_closed_customer_relation(self) -> None:
+        schema = (ROOT / "apps" / "api" / "prisma" / "schema.prisma").read_text(encoding="utf-8")
+        migration = (
+            ROOT
+            / "apps"
+            / "api"
+            / "prisma"
+            / "migrations"
+            / "20260823000004_attachment_storage_cleanup"
+            / "migration.sql"
+        ).read_text(encoding="utf-8")
+        self.assertRegex(
+            schema,
+            r'(?m)^\s*customerId\s+String\?\s+@map\("customer_id"\)$',
+        )
+        self.assertRegex(
+            schema,
+            r'(?m)^\s*customer\s+Customer\?\s+@relation\(fields: \[customerId\], references: \[id\], onDelete: Restrict, onUpdate: Cascade\)$',
+        )
+        self.assertIn('attachments Attachment[]', schema)
+        self.assertIn('ADD COLUMN "customer_id" TEXT', migration)
+        self.assertIn('CONSTRAINT "attachments_customer_contract_consistency_check" CHECK', migration)
+        self.assertIn('"resource_type" = \'CUSTOMER_CONTRACT\'', migration)
+        self.assertIn('"resource_id" = "customer_id"', migration)
+        self.assertIn('"resource_type" <> \'CUSTOMER_CONTRACT\'', migration)
+        self.assertIn('"customer_id" IS NULL', migration)
+        self.assertIn('attachments_customer_id_fkey', migration)
+
+    def test_attachment_cleanup_index_name_is_postgres_safe_and_matches_schema(self) -> None:
+        schema = (ROOT / "apps" / "api" / "prisma" / "schema.prisma").read_text(encoding="utf-8")
+        migration = (
+            ROOT
+            / "apps"
+            / "api"
+            / "prisma"
+            / "migrations"
+            / "20260823000004_attachment_storage_cleanup"
+            / "migration.sql"
+        ).read_text(encoding="utf-8")
+        index_name = "attachments_cleanup_pending_idx"
+        self.assertLessEqual(len(index_name.encode("utf-8")), 63)
+        self.assertIn(
+            '@@index([status, storageDeletedAt, storageCleanupAttempts], map: "attachments_cleanup_pending_idx")',
+            schema,
+        )
+        self.assertIn(f'CREATE INDEX "{index_name}"', migration)
+        upload_index_name = "attachments_upload_pending_idx"
+        self.assertLessEqual(len(upload_index_name.encode("utf-8")), 63)
+        self.assertIn(
+            '@@index([status, storagePublishedAt, storageCleanupAttempts], map: "attachments_upload_pending_idx")',
+            schema,
+        )
+        self.assertIn(f'CREATE INDEX "{upload_index_name}"', migration)
 
     def test_no_hardcoded_postgres_password(self) -> None:
         for compose_file in (INFRA / "compose.dev.yml", INFRA / "compose.prod.yml"):
@@ -137,6 +313,21 @@ class InfrastructureContractTests(unittest.TestCase):
                 text,
                 "Compose file secrets are bind mounts and ignore uid/gid/mode",
             )
+
+    def test_production_secret_files_use_the_runtime_group_with_no_world_access(self) -> None:
+        production = (INFRA / "compose.prod.yml").read_text(encoding="utf-8")
+        readme = (INFRA / "README.md").read_text(encoding="utf-8")
+        example = (INFRA / "env" / "prod.env.example").read_text(encoding="utf-8")
+
+        self.assertRegex(
+            production,
+            r"(?ms)^  postgres:.*?^    group_add:\n      - '10001'$",
+            "PostgreSQL must receive only the supplementary group needed to read production secrets",
+        )
+        self.assertIn("MFA_SECRET_KEY_FILE=/absolute/path/to/prod-mfa-secret-key.txt", example)
+        self.assertIn("chown root:10001", readme)
+        self.assertIn("chmod 0440", readme)
+        self.assertIn("root:10001:440", readme)
 
     def test_backup_directory_is_not_misrepresented_as_compose_env(self) -> None:
         for env_example in (

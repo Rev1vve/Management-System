@@ -22,8 +22,12 @@ export class ProjectAccessService {
 
   /** Whether the user holds any membership for the project. */
   async isProjectMember(userId: string, projectId: string): Promise<boolean> {
-    const membership = await this.prisma.projectMembership.findUnique({
-      where: { userId_projectId: { userId, projectId } },
+    const membership = await this.prisma.projectMembership.findFirst({
+      where: {
+        userId,
+        projectId,
+        project: { status: { not: 'ARCHIVED' }, deletedAt: null },
+      },
       select: { id: true },
     });
     return membership !== null;
@@ -31,8 +35,12 @@ export class ProjectAccessService {
 
   /** Project roles the user holds (empty when not a member). */
   async listProjectRoles(userId: string, projectId: string): Promise<ProjectRole[]> {
-    const membership = await this.prisma.projectMembership.findUnique({
-      where: { userId_projectId: { userId, projectId } },
+    const membership = await this.prisma.projectMembership.findFirst({
+      where: {
+        userId,
+        projectId,
+        project: { status: { not: 'ARCHIVED' }, deletedAt: null },
+      },
       include: { roles: true },
     });
     return (membership?.roles ?? []).map((r) => r.role);
@@ -45,9 +53,9 @@ export class ProjectAccessService {
   async assertProjectAccess(userId: string, projectId: string): Promise<{ roles: ProjectRole[] }> {
     const project = await this.prisma.project.findUnique({
       where: { id: projectId },
-      select: { id: true },
+      select: { id: true, status: true, deletedAt: true },
     });
-    if (!project) {
+    if (!project || project.status === 'ARCHIVED' || project.deletedAt !== null) {
       throw new NotFoundException('项目不存在');
     }
 
@@ -83,7 +91,7 @@ export class ProjectAccessService {
   /** Project ids the user can access; used by services for scope filtering. */
   async resolveProjectScope(userId: string): Promise<string[]> {
     const memberships = await this.prisma.projectMembership.findMany({
-      where: { userId },
+      where: { userId, project: { status: { not: 'ARCHIVED' }, deletedAt: null } },
       select: { projectId: true },
     });
     return memberships.map((m) => m.projectId);
