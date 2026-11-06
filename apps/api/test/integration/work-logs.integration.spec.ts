@@ -186,12 +186,16 @@ describe('WorkLogsService.submit persistence', () => {
 
   it('rejects submitting a log that was returned for changes', async () => {
     const { authorId, approverId, workLogId } = await seedLog();
+    await service.submit(authorId, workLogId, { approverId });
+    // 状态机只在数据库层允许 SUBMITTED -> RETURNED。
     await prisma.workLog.update({ where: { id: workLogId }, data: { status: 'RETURNED' } });
 
+    const requestsAfterFirstSubmit = await prisma.approvalRequest.count();
     await expect(service.submit(authorId, workLogId, { approverId })).rejects.toBeInstanceOf(
       ConflictException,
     );
-    expect(await prisma.approvalRequest.count()).toBe(0);
+    // 被拒绝的重复提交不得再生成审批请求。
+    expect(await prisma.approvalRequest.count()).toBe(requestsAfterFirstSubmit);
   });
 
   it('rejects an approver who is not an active project member', async () => {
@@ -425,5 +429,251 @@ describe('WorkLogsService versions (real PostgreSQL)', () => {
 
     await service.updateDraft(authorId, created.id, { ...draft, hours: 2 }, detail.version!);
     expect((await service.getDetail(authorId, created.id)).version).toBe(2);
+  });
+});
+
+/**
+ * D-C：数据库层的归属与不可变约束（VERTICAL-4）。
+ * 这些用例直接打 Prisma/SQL，绕过 service，证明"即使应用层写错也写不进去"。
+ */
+describe('work log version guards (database level)', () => {
+  async function seedTwoDrafts() {
+    const authorId = await createUser('author');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    const a = await service.createDraft(authorId, { ...draft, projectId });
+    const b = await service.createDraft(authorId, { ...draft, projectId });
+    const versionB = await prisma.workLogVersion.findFirstOrThrow({ where: { workLogId: b.id } });
+    const versionA = await prisma.workLogVersion.findFirstOrThrow({ where: { workLogId: a.id } });
+    return { authorId, projectId, logA: a.id, logB: b.id, versionA, versionB };
+  }
+
+  it('rejects pointing currentVersionId at another work log version', async () => {
+    const { logA, versionB } = await seedTwoDrafts();
+
+    await expect(
+      prisma.$executeRaw`UPDATE "work_logs" SET "current_version_id" = ${versionB.id} WHERE "id" = ${logA}`,
+    ).rejects.toThrow(/current version must belong to the same work log/);
+  });
+
+  it('rejects editing a historical version because it is frozen', async () => {
+    const authorId = await createUser('author');
+    const approverId = await createUser('approver');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    await addMember(approverId, projectId, ['APPROVER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+    await service.submit(authorId, created.id, { approverId });
+    await prisma.workLog.update({ where: { id: created.id }, data: { status: 'RETURNED' } });
+    const historical = await prisma.workLogVersion.findFirstOrThrow({
+      where: { workLogId: created.id },
+    });
+    await service.addVersion(authorId, created.id, { ...draft, completion: '新版本' });
+
+    await expect(
+      prisma.$executeRaw`UPDATE "work_log_versions" SET "completion" = '篡改' WHERE "id" = ${historical.id}`,
+    ).rejects.toThrow(/work log version is frozen and cannot be edited/);
+  });
+
+  it('rejects editing the current version once the log left DRAFT', async () => {
+    const authorId = await createUser('author');
+    const approverId = await createUser('approver');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    await addMember(approverId, projectId, ['APPROVER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+    const current = await prisma.workLogVersion.findFirstOrThrow({
+      where: { workLogId: created.id },
+    });
+    await service.submit(authorId, created.id, { approverId });
+
+    await expect(
+      prisma.$executeRaw`UPDATE "work_log_versions" SET "completion" = '篡改' WHERE "id" = ${current.id}`,
+    ).rejects.toThrow(/work log version is frozen and cannot be edited/);
+  });
+
+  it('allows editing the current version while the log is DRAFT', async () => {
+    const authorId = await createUser('author');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+    const current = await prisma.workLogVersion.findFirstOrThrow({
+      where: { workLogId: created.id },
+    });
+
+    await prisma.workLogVersion.update({
+      where: { id: current.id },
+      data: { completion: '草稿允许直接改' },
+    });
+    await service.updateDraft(authorId, created.id, { ...draft, hours: 3 }, 1);
+
+    const stored = await prisma.workLogVersion.findUniqueOrThrow({ where: { id: current.id } });
+    expect(stored.completion).toBe(draft.completion);
+  });
+
+  it('rejects altering the version structure', async () => {
+    const { versionA } = await seedTwoDrafts();
+
+    await expect(
+      prisma.$executeRaw`UPDATE "work_log_versions" SET "version_number" = 9 WHERE "id" = ${versionA.id}`,
+    ).rejects.toThrow(/work log version structure is immutable/);
+  });
+
+  it('rejects hard-deleting a version', async () => {
+    const { versionA } = await seedTwoDrafts();
+
+    await expect(
+      prisma.$executeRaw`DELETE FROM "work_log_versions" WHERE "id" = ${versionA.id}`,
+    ).rejects.toThrow(/append-only/);
+  });
+
+  it('rejects an illegal status transition (rewinding to DRAFT)', async () => {
+    const authorId = await createUser('author');
+    const approverId = await createUser('approver');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    await addMember(approverId, projectId, ['APPROVER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+    await service.submit(authorId, created.id, { approverId });
+
+    await expect(
+      prisma.$executeRaw`UPDATE "work_logs" SET "status" = 'DRAFT' WHERE "id" = ${created.id}`,
+    ).rejects.toThrow(/illegal work log status transition/);
+    const stored = await prisma.workLog.findUniqueOrThrow({ where: { id: created.id } });
+    expect(stored.status).toBe('SUBMITTED');
+  });
+
+  it('freezes the current version on submit so it can never be edited again', async () => {
+    const authorId = await createUser('author');
+    const approverId = await createUser('approver');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    await addMember(approverId, projectId, ['APPROVER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+    const current = await prisma.workLogVersion.findFirstOrThrow({
+      where: { workLogId: created.id },
+    });
+    expect(current.frozenAt).toBeNull();
+
+    await service.submit(authorId, created.id, { approverId });
+
+    const frozen = await prisma.workLogVersion.findUniqueOrThrow({ where: { id: current.id } });
+    expect(frozen.frozenAt).not.toBeNull();
+    await expect(
+      prisma.$executeRaw`UPDATE "work_log_versions" SET "completion" = '篡改' WHERE "id" = ${current.id}`,
+    ).rejects.toThrow(/frozen/);
+    const after = await prisma.workLogVersion.findUniqueOrThrow({ where: { id: current.id } });
+    expect(after.completion).toBe(draft.completion);
+  });
+
+  it('freezes the current version at the database level when the log leaves DRAFT', async () => {
+    // 模拟"应用漏写 frozen_at"：绕过 service，直接用 SQL 改状态。
+    // 数据库必须在状态离开 DRAFT 时自己冻结当前版本，否则历史会 fail-open。
+    const authorId = await createUser('author');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+    const current = await prisma.workLogVersion.findFirstOrThrow({
+      where: { workLogId: created.id },
+    });
+    expect(current.frozenAt).toBeNull();
+
+    await prisma.$executeRaw`UPDATE "work_logs" SET "status" = 'SUBMITTED' WHERE "id" = ${created.id}`;
+
+    const frozen = await prisma.workLogVersion.findUniqueOrThrow({ where: { id: current.id } });
+    expect(frozen.frozenAt).not.toBeNull();
+    await expect(
+      prisma.$executeRaw`UPDATE "work_log_versions" SET "completion" = '篡改' WHERE "id" = ${current.id}`,
+    ).rejects.toThrow(/frozen/);
+    const after = await prisma.workLogVersion.findUniqueOrThrow({ where: { id: current.id } });
+    expect(after.completion).toBe(draft.completion);
+  });
+
+  it('rejects repointing the current version of a submitted log', async () => {
+    const authorId = await createUser('author');
+    const approverId = await createUser('approver');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    await addMember(approverId, projectId, ['APPROVER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+    const current = await prisma.workLogVersion.findFirstOrThrow({
+      where: { workLogId: created.id },
+    });
+    await service.submit(authorId, created.id, { approverId });
+
+    // 必须是"不同的值"才会进入重指向分支；这里清空指针同样属于非法重指向。
+    await expect(
+      prisma.$executeRaw`UPDATE "work_logs" SET "current_version_id" = NULL WHERE "id" = ${created.id}`,
+    ).rejects.toThrow(/current version can only change while the work log is a draft/);
+    // 伪造版本 + 重指向的组合也必须被挡（版本 INSERT 守卫）。
+    await expect(
+      prisma.$executeRaw`
+        INSERT INTO "work_log_versions" ("id","work_log_id","version_number","work_date","hours","completion","submitted_by_id","submitted_at","created_at")
+        VALUES ('v-forged-2', ${created.id}, 7, '2026-11-06', 1, 'FORGED', ${authorId}, now(), now())
+      `,
+    ).rejects.toThrow(/may only be appended while the work log is a draft/);
+    expect(current.id).toBeTruthy();
+  });
+
+  it('rejects appending a version to a submitted log', async () => {
+    const authorId = await createUser('author');
+    const approverId = await createUser('approver');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    await addMember(approverId, projectId, ['APPROVER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+    await service.submit(authorId, created.id, { approverId });
+
+    await expect(
+      prisma.$executeRaw`
+        INSERT INTO "work_log_versions" ("id","work_log_id","version_number","work_date","hours","completion","submitted_by_id","submitted_at","created_at")
+        VALUES ('v-forged', ${created.id}, 9, '2026-11-06', 1, 'FORGED CONTENT', ${authorId}, now(), now())
+      `,
+    ).rejects.toThrow(/may only be appended while the work log is a draft/);
+    expect(await prisma.workLogVersion.count({ where: { workLogId: created.id } })).toBe(1);
+  });
+
+  it('freezes every unfrozen version when the log leaves DRAFT in one statement', async () => {
+    const authorId = await createUser('author');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+    // 追加第二个版本（DRAFT 允许），但不把它设为当前版本。
+    await prisma.$executeRaw`
+      INSERT INTO "work_log_versions" ("id","work_log_id","version_number","work_date","hours","completion","submitted_by_id","submitted_at","created_at")
+      VALUES ('v-extra', ${created.id}, 2, '2026-11-06', 1, 'extra draft', ${authorId}, now(), now())
+    `;
+    const first = await prisma.workLogVersion.findFirstOrThrow({
+      where: { workLogId: created.id, versionNumber: 1 },
+    });
+
+    // 离开 DRAFT（不重指向）：该日志下所有未冻结版本都必须被冻结，
+    // 包括不是当前版本的那一条。
+    await prisma.$executeRaw`
+      UPDATE "work_logs" SET "status" = 'SUBMITTED' WHERE "id" = ${created.id}
+    `;
+    // 同时重指向属于非法操作，必须被拒（M2）。
+    await expect(
+      prisma.$executeRaw`
+        UPDATE "work_logs" SET "current_version_id" = 'v-extra' WHERE "id" = ${created.id}
+      `,
+    ).rejects.toThrow(/current version can only change while the work log is a draft/);
+
+    const after = await prisma.workLogVersion.findMany({ where: { workLogId: created.id } });
+    expect(after.every((v) => v.frozenAt !== null)).toBe(true);
+    await expect(
+      prisma.$executeRaw`UPDATE "work_log_versions" SET "completion" = '篡改' WHERE "id" = ${first.id}`,
+    ).rejects.toThrow(/frozen/);
+  });
+
+  it('rejects inserting a work log that does not start in DRAFT', async () => {
+    const authorId = await createUser('author');
+    const projectId = await createProject();
+    await expect(
+      prisma.$executeRaw`
+        INSERT INTO "work_logs" ("id","number","author_id","project_id","status","visibility","version","created_at","updated_at")
+        VALUES ('wl-forged','WL-FORGED',${authorId},${projectId},'APPROVED','PRIVATE',1,now(),now())
+      `,
+    ).rejects.toThrow(/must start in DRAFT/);
   });
 });

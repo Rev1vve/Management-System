@@ -561,6 +561,12 @@ export class WorkLogsService {
       });
       if (updated.count !== 1) throw new ConflictException(SUBMIT_BLOCKED_MESSAGE);
 
+      // 冻结当前版本：提交之后该版本行永久只读（数据库触发器只看本行 frozen_at）。
+      await tx.workLogVersion.updateMany({
+        where: { id: log.currentVersionId!, workLogId: log.id, frozenAt: null },
+        data: { frozenAt: new Date() },
+      });
+
       const request = await tx.approvalRequest.create({
         data: {
           workLogVersionId: log.currentVersionId!,

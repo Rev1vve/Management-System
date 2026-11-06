@@ -18,6 +18,7 @@ function createPrismaMock(log: Record<string, unknown> | null = null) {
     workLog: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     approvalRequest: { create: vi.fn().mockResolvedValue({ id: 'approval-1' }) },
     projectMembership: { findFirst: vi.fn().mockResolvedValue({ id: 'membership-1' }) },
+    workLogVersion: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
   };
   const prisma = {
     workLog: { findFirst: vi.fn().mockResolvedValue(log) },
@@ -75,6 +76,19 @@ describe('WorkLogsService submit', () => {
           submitterId: 'author-1',
           status: 'PENDING',
         }),
+      }),
+    );
+  });
+
+  it('freezes the current version in the same transaction as the submission', async () => {
+    const service = createService(prisma);
+
+    await service.submit('author-1', 'wl-1', { approverId: 'approver-1' });
+
+    expect(prisma.tx.workLogVersion.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'wlv-1', workLogId: 'wl-1', frozenAt: null },
+        data: { frozenAt: expect.any(Date) },
       }),
     );
   });

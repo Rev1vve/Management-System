@@ -473,9 +473,10 @@ model WorkLogVersion {
   hours         Decimal  @map("hours") @db.Decimal(10, 2)
   completion    String   @map("completion")
   progressNote  String?  @map("progress_note")
-  submittedById String   @map("submitted_by_id")
-  submittedAt   DateTime @default(now()) @map("submitted_at") @db.Timestamptz(3)
-  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  submittedById String    @map("submitted_by_id")
+  submittedAt   DateTime  @default(now()) @map("submitted_at") @db.Timestamptz(3)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  frozenAt      DateTime? @map("frozen_at") @db.Timestamptz(3)
 
   workLog          WorkLog           @relation("WorkLogVersions", fields: [workLogId], references: [id])
   submittedBy      User              @relation(fields: [submittedById], references: [id])

@@ -268,6 +268,94 @@ class InfrastructureContractTests(unittest.TestCase):
         self.assertIn("-type f -exec chown 10001:10001", restore)
         self.assertIn("-type f -exec chmod 0600", restore)
 
+    def test_work_log_guard_hardening_covers_status_truncate_and_lock(self) -> None:
+        migration = (
+            ROOT
+            / "apps"
+            / "api"
+            / "prisma"
+            / "migrations"
+            / "20260826000006_work_log_guard_hardening"
+            / "migration.sql"
+        )
+        self.assertTrue(migration.is_file(), "work log guard hardening migration is missing")
+        sql = migration.read_text(encoding="utf-8")
+        self.assertIn("BEGIN;", sql)
+        self.assertIn("COMMIT;", sql)
+        # 0006 引入了状态机与父行锁；父行锁在 0007 被冻结列方案取代（见下一项）。
+        self.assertIn('CREATE TRIGGER "work_logs_status_transition_guard"', sql)
+        self.assertIn("DROP TRIGGER IF EXISTS", sql)
+
+    def test_work_log_freeze_migration_removes_lock_and_truncate_reliance(self) -> None:
+        migration = (
+            ROOT
+            / "apps"
+            / "api"
+            / "prisma"
+            / "migrations"
+            / "20260826000007_work_log_version_freeze"
+            / "migration.sql"
+        )
+        self.assertTrue(migration.is_file(), "work log freeze migration is missing")
+        sql = migration.read_text(encoding="utf-8")
+        self.assertIn("BEGIN;", sql)
+        self.assertIn("COMMIT;", sql)
+        # 冻结列 + 只读判定：不再读父行，因此没有 FOR UPDATE 与快照窗口。
+        self.assertIn('ADD COLUMN IF NOT EXISTS "frozen_at"', sql)
+        self.assertIn('OLD."frozen_at" IS NOT NULL', sql)
+        # 只允许在注释里提到旧方案；不得出现可执行的 FOR UPDATE 语句。
+        self.assertNotIn("FOR UPDATE;", sql)
+        # 顺序：必须先摘掉旧触发器再回填，否则带历史数据升级会失败（review-10 阻塞项）。
+        self.assertLess(
+            sql.index('DROP TRIGGER IF EXISTS "work_log_versions_immutable_guard"'),
+            sql.index('UPDATE "work_log_versions" v'),
+        )
+        # 数据库兜底：状态离开 DRAFT 时冻结该日志下所有未冻结版本（不只当前指针）。
+        self.assertIn('CREATE TRIGGER "work_logs_freeze_on_submit"', sql)
+        self.assertIn('OLD."status" = \'DRAFT\' AND NEW."status" <> \'DRAFT\'', sql)
+        self.assertIn('WHERE "work_log_id" = NEW."id" AND "frozen_at" IS NULL', sql)
+        # 非草稿日志不得重指向、不得追加版本（否则可伪造展示内容）。
+        self.assertIn('current version can only change while the work log is a draft', sql)
+        self.assertIn('CREATE TRIGGER "work_log_versions_insert_guard"', sql)
+        # 状态机补 INSERT 约束。
+        self.assertIn('CREATE TRIGGER "work_logs_status_insert_guard"', sql)
+        # 单角色部署下 TRUNCATE 守卫只是假守卫，必须显式撤掉而不是留着误导。
+        self.assertIn('DROP TRIGGER IF EXISTS "work_log_versions_truncate_guard"', sql)
+        # 升级前已提交的版本要先冻结，避免迁移把历史变成可改。
+        self.assertIn('SET "frozen_at" =', sql)
+        # 冻结列必须落到 Prisma schema，否则 migrate diff 会报 drift。
+        schema = (ROOT / "apps" / "api" / "prisma" / "schema.prisma").read_text(encoding="utf-8")
+        self.assertIn(
+            'frozenAt      DateTime? @map("frozen_at") @db.Timestamptz(3)',
+            schema,
+        )
+
+    def test_work_log_guards_migration_is_atomic_and_fail_closed(self) -> None:
+        migration = (
+            ROOT
+            / "apps"
+            / "api"
+            / "prisma"
+            / "migrations"
+            / "20260826000005_work_log_version_guards"
+            / "migration.sql"
+        )
+        self.assertTrue(migration.is_file(), "work log guard migration is missing")
+        sql = migration.read_text(encoding="utf-8")
+
+        # 显式事务：中途失败不能留下半个约束。
+        self.assertIn("BEGIN;", sql)
+        self.assertIn("COMMIT;", sql)
+        # 升级前必须验证既有数据，不一致时拒绝迁移。
+        self.assertIn("RAISE EXCEPTION 'work log version guard migration requires consistent", sql)
+        # 两条不变量都要落到数据库：归属 + 追加写。
+        self.assertIn('CREATE TRIGGER "work_logs_current_version_guard"', sql)
+        self.assertIn('CREATE TRIGGER "work_log_versions_immutable_guard"', sql)
+        self.assertIn("ON \"work_log_versions\"\nFOR EACH ROW", sql)
+        # 草稿编辑是唯一允许的 UPDATE 场景。
+        self.assertIn("log_status <> 'DRAFT'", sql)
+        self.assertIn("DELETE", sql)
+
     def test_attachment_cleanup_migration_is_explicitly_atomic(self) -> None:
         migration = (
             ROOT
