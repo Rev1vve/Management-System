@@ -73,8 +73,8 @@ Windows 没有 0700/0600 语义，私有性由 NTFS ACL 承担。服务在启动
 - 受限令牌环境（部分 CI 沙箱）如需运行附件测试，可设置
   `ATTACHMENTS_ACL_ALLOWED_SIDS=S-1-5-21-...,S-1-5-21-...` 显式追加可信主体；
   **默认为空**，生产不要设置该变量。
-- `pnpm infra:check` 在 Windows 上会跳过 11 项依赖 POSIX shell/`coreutils`/Docker 的契约
-  （显式标记原因），这些由 `ubuntu-latest` CI 覆盖。
+- `pnpm infra:check` 在 Windows 上会跳过 12 项：11 项依赖 POSIX shell/`coreutils`/Docker 的契约
+  （显式标记原因，由 `ubuntu-latest` CI 覆盖）+ 1 项只约束 Linux CI 的工具链反向断言。
 
 ## 开发基础设施
 

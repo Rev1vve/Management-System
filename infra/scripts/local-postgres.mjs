@@ -159,6 +159,8 @@ if (options.command.length === 0) {
     await stopQuietly();
     process.exitCode = 0;
   } else {
+    // 常驻模式：保持进程存活，直到收到 SIGINT/SIGTERM（上面的 handler 会先停库再退出）。
+    await new Promise(() => undefined);
   }
 } else {
   // runCommand 抛错时也要停机（它的 reject 走 unhandledRejection → 上面的 handler）。

@@ -189,6 +189,25 @@ describe('WorkLogsService createDraft', () => {
     expect(prisma.tx.workLog.create).not.toHaveBeenCalled();
   });
 
+  it('rejects an archived or deleted order reference', async () => {
+    prisma.tx.order.findFirst.mockResolvedValue(null);
+    const { service } = createService(prisma);
+
+    await expect(
+      service.createDraft('user-1', { ...baseInput, orderId: 'archived-order' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.tx.order.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'archived-order',
+          projectId: 'project-1',
+          deletedAt: null,
+          status: { not: 'ARCHIVED' },
+        }),
+      }),
+    );
+  });
+
   it.each([
     ['hours above 24', { hours: 24.5 }],
     ['negative hours', { hours: -1 }],

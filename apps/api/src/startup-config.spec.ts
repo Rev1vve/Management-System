@@ -47,9 +47,16 @@ describe('assertApiRuntimeDependencies', () => {
     expect(check).toHaveBeenCalledWith('/usr/bin/mv', expect.any(Number));
   });
 
+  it('accepts Windows (link/unlink path) without requiring the GNU mover', async () => {
+    const check = vi.fn();
+
+    await expect(assertApiRuntimeDependencies('win32', check)).resolves.toBeUndefined();
+    expect(check).not.toHaveBeenCalled();
+  });
+
   it('fails closed on unsupported platforms or a missing mover', async () => {
     await expect(assertApiRuntimeDependencies('darwin', vi.fn())).rejects.toThrow(
-      '附件安全清理仅支持 Linux',
+      '附件安全存储仅支持 Linux 与 Windows',
     );
     await expect(
       assertApiRuntimeDependencies('linux', vi.fn().mockRejectedValue(new Error('missing'))),

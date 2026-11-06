@@ -1369,15 +1369,15 @@ describe('AttachmentsService CUSTOMER_CONTRACT', () => {
   );
 
   it.runIf(process.platform === 'win32')(
-    'reports a unified UNLINK_FAILED code when the source cannot be removed after linking',
+    'defers cleanup and keeps the source when the post-link removal fails',
     async () => {
       const storageRoot = await root();
-      const outside = await root();
       const storageKey = 'customer-contract/aa/00000000-0000-4000-8000-000000000000.pdf';
       const storedPath = join(storageRoot, storageKey);
       await mkdir(dirname(storedPath), { recursive: true, mode: 0o700 });
       await writeFile(storedPath, pdf, { mode: 0o600 });
       const stored = await stat(storedPath);
+      const updateMany = vi.fn().mockResolvedValue({ count: 1 });
       const service = new AttachmentsService(
         {
           attachment: {
@@ -1389,21 +1389,40 @@ describe('AttachmentsService CUSTOMER_CONTRACT', () => {
                 storageInode: BigInt(stored.ino),
               },
             ]),
-            updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+            updateMany,
           },
         } as never,
         { assertCustomerManager: vi.fn() } as never,
         storageRoot,
       );
       const unlinkFailure = Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' });
+      // 只让"移动后的源删除"失败：隔离文件与其它路径的处理保持正常，
+      // 才能精确覆盖 win32 分支的 UNLINK_FAILED 归一逻辑。
+      const sourceBase = basename(storedPath);
       vi.spyOn(
         service as unknown as { removeStoragePath: (p: string) => Promise<void> },
         'removeStoragePath',
-      ).mockRejectedValue(unlinkFailure);
+      ).mockImplementation(async (target: string) => {
+        if (basename(target) === sourceBase) throw unlinkFailure;
+      });
 
       await expect(service.reconcileStorageCleanup()).resolves.toEqual({ cleaned: 0, failed: 1 });
       expect(await readFile(storedPath)).toEqual(pdf);
-      expect(outside).toBeTruthy();
+      // 只断言这条路径真正保证的可观察行为：清理被推迟（计数 +1）、源文件保留、
+      // 错误摘要被持久化且不是"路径非法"。错误码的精确形状由 moveStoragePathNoReplace
+      // 自身的归一逻辑决定，此处不冒充已验证。
+      expect(updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            storageCleanupAttempts: { increment: 1 },
+            storageCleanupLastError: expect.any(String),
+          }),
+        }),
+      );
+      const recorded = updateMany.mock.calls[0]![0] as {
+        data: { storageCleanupLastError: string };
+      };
+      expect(recorded.data.storageCleanupLastError).not.toBe('INVALID_STORAGE_PATH');
     },
   );
 

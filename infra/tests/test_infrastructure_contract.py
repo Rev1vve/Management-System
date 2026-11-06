@@ -96,6 +96,14 @@ class PosixToolchainAvailabilityTests(unittest.TestCase):
             "Linux 上必须能执行 POSIX 契约（缺 bash/sha256sum/GNU mv/tar/sed 之一）",
         )
 
+    def test_linux_ci_has_docker_cli(self) -> None:
+        if not sys.platform.startswith("linux"):
+            self.skipTest("仅约束 Linux CI 环境")
+        self.assertIsNotNone(
+            shutil.which("docker"),
+            "Linux CI 必须带 Docker CLI，否则 Compose 网络契约会被静默跳过",
+        )
+
 
 class InfrastructureContractTests(unittest.TestCase):
     def test_expected_task_two_files_exist(self) -> None:
