@@ -8,7 +8,7 @@ import {
 import { randomBytes } from 'node:crypto';
 
 import { PrismaService } from '../../database/prisma.service';
-import { PERMISSIONS, type PermissionKey } from '../authorization/permission.constants';
+import { PERMISSIONS } from '../authorization/permission.constants';
 import { ProjectAccessService } from '../project-access/project-access.service';
 import { RolesService } from '../roles/roles.service';
 
@@ -203,13 +203,12 @@ export class WorkLogsService {
   async createDraft(userId: string, input: CreateWorkLogInput) {
     // 先鉴权、再暴露字段/格式校验细节：非成员不应通过 400/404 的差异探测字段白名单。
     const projectId = requireString(input?.projectId, 'projectId');
-    const { roles } = await this.projectAccess.assertProjectAccess(userId, projectId);
+    await this.projectAccess.assertProjectAccess(userId, projectId);
     const draft = parseDraft(input);
     if (draft.visibility === 'PROJECT_VISIBLE') {
-      const permissions: PermissionKey[] = await this.roles.listUserPermissions(userId);
-      const mayManage =
-        roles.includes('PROJECT_MANAGER') || permissions.includes(PERMISSIONS.WORKLOG_MANAGE);
-      if (!mayManage) throw new ForbiddenException('无权限设置工作日志可见性');
+      // 与 setVisibility 共用同一判定：项目内 PROJECT_MANAGER 或 worklog:manage（OR），
+      // 且 worklog:manage 只在本人属于该项目时才有意义（assertProjectAccess 已强制成员身份）。
+      await this.assertVisibilityManager(userId, projectId);
     }
 
     // 有界重试：编号随机后缀冲突时换号，最多 3 次；其它错误立即失败关闭。
@@ -433,6 +432,82 @@ export class WorkLogsService {
         },
       },
     });
+  }
+
+  /**
+   * 设置可见性（D-A）：仅项目作用域内的 PROJECT_MANAGER 或持 worklog:manage 者（OR）。
+   * 用 version 做乐观并发，避免与草稿编辑/提交互相覆盖。
+   */
+  async setVisibility(
+    userId: string,
+    workLogId: string,
+    input: { visibility: string; version: unknown },
+  ) {
+    const visibility = input?.visibility;
+    if (typeof visibility !== 'string' || !VISIBILITIES.has(visibility)) {
+      throw new BadRequestException('visibility 非法');
+    }
+    const version = parseExpectedVersion(input?.version);
+
+    const id = requireString(workLogId, 'workLogId');
+    const log = await this.prisma.workLog.findFirst({
+      where: { id, deletedAt: null },
+      select: { id: true, projectId: true },
+    });
+    if (!log) throw new NotFoundException('工作日志不存在');
+
+    await this.assertVisibilityManager(userId, log.projectId);
+
+    const updated = await this.prisma.workLog.updateMany({
+      where: { id: log.id, projectId: log.projectId, deletedAt: null, version },
+      data: { visibility: visibility as 'PRIVATE' | 'PROJECT_VISIBLE', version: { increment: 1 } },
+    });
+    if (updated.count !== 1) throw new ConflictException('工作日志已被修改，请刷新后重试');
+    return { id: log.id, visibility, version: version + 1 };
+  }
+
+  /**
+   * 最小可见性元数据入口（D-B）：只返回 id/visibility/version。
+   * 不返回正文/历史/附件，不按私有字段搜索或排序，也不放宽任何既有读取权限。
+   */
+  async listVisibilityMetadata(
+    userId: string,
+    projectId: string,
+    query: { page?: number; pageSize?: number },
+  ) {
+    const project = requireString(projectId, 'projectId');
+    await this.assertVisibilityManager(userId, project);
+
+    // 分页参数必须是安全整数：`?page=Infinity` 会让 skip=Infinity，Prisma 抛校验错误变成 500。
+    const rawPage = Number(query?.page ?? 1);
+    const page = Number.isSafeInteger(rawPage) && rawPage >= 1 ? rawPage : 1;
+    // 上限 100，避免被当成批量导出使用。
+    const rawPageSize = Number(query?.pageSize ?? 20);
+    const pageSize =
+      Number.isSafeInteger(rawPageSize) && rawPageSize >= 1 ? Math.min(100, rawPageSize) : 20;
+
+    const where = { projectId: project, deletedAt: null } as const;
+    const [items, total] = await Promise.all([
+      this.prisma.workLog.findMany({
+        where,
+        select: { id: true, visibility: true, version: true },
+        orderBy: { id: 'asc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      this.prisma.workLog.count({ where }),
+    ]);
+    return { items, page, pageSize, total };
+  }
+
+  /** 可见性写权的唯一判定点：PROJECT_MANAGER 角色 或 worklog:manage 能力（OR）。 */
+  private async assertVisibilityManager(userId: string, projectId: string): Promise<void> {
+    const { roles } = await this.projectAccess.assertProjectAccess(userId, projectId);
+    if (roles.includes('PROJECT_MANAGER')) return;
+    const permissions = await this.roles.listUserPermissions(userId);
+    if (!permissions.includes(PERMISSIONS.WORKLOG_MANAGE)) {
+      throw new ForbiddenException('无权限设置工作日志可见性');
+    }
   }
 
   private isConcurrencyError(error: unknown): boolean {

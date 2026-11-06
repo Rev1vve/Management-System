@@ -4,7 +4,7 @@ import { ConflictException, NotFoundException } from '@nestjs/common';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { PrismaService } from '../../src/database/prisma.service';
 import { installWindowsAclAllowlist } from '../../src/testing/windows-acl-allowlist';
@@ -63,6 +63,11 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  await truncateAll();
+});
+
+afterEach(async () => {
+  // 不把 PENDING 行/文件留给后续 spec 的启动 reconciliation（跨文件共享同一个库）。
   await truncateAll();
 });
 

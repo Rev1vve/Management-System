@@ -1,6 +1,6 @@
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -606,15 +606,18 @@ describe('task 7 AppModule HTTP contract on PostgreSQL', () => {
     const customer = await prisma.customer.create({
       data: { number: 'HTTP-PENDING-MISMATCH', name: '身份冲突附件客户', status: 'ACTIVE' },
     });
-    const storageKey = 'customer-contract/bb/20000000-0000-4000-8000-000000000000.pdf';
+    // 唯一 storage key + 先清理目标路径：同一文件内的多个用例共享 attachmentRoot，
+    // 固定路径可能残留上一次的硬链接，导致身份比较结果依赖执行顺序。
+    const storageKey = `customer-contract/bb/${randomUUID()}.pdf`;
     const finalPath = join(attachmentRoot, storageKey);
-    const ownedPath = join(attachmentRoot, 'owned-pending.pdf');
+    const ownedPath = join(attachmentRoot, `owned-pending-${randomUUID()}.pdf`);
     await mkdir(join(attachmentRoot, 'customer-contract/bb'), { recursive: true });
     await chmod(join(attachmentRoot, 'customer-contract'), 0o700);
     await chmod(join(attachmentRoot, 'customer-contract/bb'), 0o700);
     await writeFile(ownedPath, Buffer.from('%PDF-1.7\nowned'), { mode: 0o600 });
     const identity = await stat(ownedPath);
     const replacement = Buffer.from('%PDF-1.7\nreplacement');
+    await rm(finalPath, { force: true });
     await writeFile(finalPath, replacement, { mode: 0o600 });
     const pending = await prisma.attachment.create({
       data: {
@@ -634,6 +637,11 @@ describe('task 7 AppModule HTTP contract on PostgreSQL', () => {
       },
     });
 
+    // 启动 reconciliation 是全局的：先清掉本用例之外的 PENDING 行，
+    // 否则同库其他 spec 的残留会让错误分类断言依赖文件执行顺序。
+    await prisma.attachment.deleteMany({
+      where: { status: 'PENDING', id: { not: pending.id } },
+    });
     const service = app.get(AttachmentsService);
     await service.onApplicationBootstrap();
     const blocked = await prisma.attachment.findUniqueOrThrow({ where: { id: pending.id } });

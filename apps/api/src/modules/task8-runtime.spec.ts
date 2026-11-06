@@ -68,6 +68,16 @@ describe('task 8 work-log HTTP surface', () => {
         .patch('/api/v1/work-logs/work-log-1')
         .send({ workDate: '2026-11-07', hours: 1, completion: 'x' });
       expect(editDraft.status).toBe(401);
+
+      const visibility = await request(app.getHttpServer())
+        .patch('/api/v1/work-logs/work-log-1/visibility')
+        .send({ visibility: 'PROJECT_VISIBLE', version: 1 });
+      expect(visibility.status).toBe(401);
+
+      const metadata = await request(app.getHttpServer()).get(
+        '/api/v1/projects/project-1/work-logs/visibility',
+      );
+      expect(metadata.status).toBe(401);
     } finally {
       await app.close();
     }

@@ -59,8 +59,13 @@ export class ProjectAccessService {
       throw new NotFoundException('项目不存在');
     }
 
-    const membership = await this.prisma.projectMembership.findUnique({
-      where: { userId_projectId: { userId, projectId } },
+    // 停用/软删的账号不因残留成员关系而保留项目作用域（与 submit() 的 ACTIVE 约定一致）。
+    const membership = await this.prisma.projectMembership.findFirst({
+      where: {
+        userId,
+        projectId,
+        user: { status: 'ACTIVE', deletedAt: null },
+      },
       include: { roles: true },
     });
     if (!membership) {

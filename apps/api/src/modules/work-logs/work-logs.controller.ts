@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 
 import { PermissionsGuard } from '../authorization/permissions.guard';
@@ -74,5 +74,31 @@ export class WorkLogsController {
   @Get('work-logs/:id')
   detail(@Req() request: Authenticated, @Param('id') id: string) {
     return this.workLogs.getDetail(request.user.id, id);
+  }
+
+  /** 设置可见性（D-A：项目经理 或 worklog:manage）。 */
+  @Patch('work-logs/:id/visibility')
+  setVisibility(
+    @Req() request: Authenticated,
+    @Param('id') id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    return this.workLogs.setVisibility(request.user.id, id, {
+      visibility: body.visibility as string,
+      version: body.version,
+    });
+  }
+
+  /** 最小可见性元数据入口（D-B）：仅 id/visibility/version。 */
+  @Get('projects/:projectId/work-logs/visibility')
+  listVisibility(
+    @Req() request: Authenticated,
+    @Param('projectId') projectId: string,
+    @Query() query: Record<string, unknown>,
+  ) {
+    return this.workLogs.listVisibilityMetadata(request.user.id, projectId, {
+      page: Number(query.page ?? 1),
+      pageSize: Number(query.pageSize ?? 20),
+    });
   }
 }

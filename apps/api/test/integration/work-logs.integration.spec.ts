@@ -1,4 +1,11 @@
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { PrismaService } from '../../src/database/prisma.service';
@@ -675,5 +682,168 @@ describe('work log version guards (database level)', () => {
         VALUES ('wl-forged','WL-FORGED',${authorId},${projectId},'APPROVED','PRIVATE',1,now(),now())
       `,
     ).rejects.toThrow(/must start in DRAFT/);
+  });
+});
+
+describe('WorkLogsService visibility (real PostgreSQL)', () => {
+  async function seedProjectWithLog() {
+    const authorId = await createUser('author');
+    const managerId = await createUser('manager');
+    const memberId = await createUser('member');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    await addMember(managerId, projectId, ['PROJECT_MANAGER']);
+    await addMember(memberId, projectId, ['MEMBER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+    return { authorId, managerId, memberId, projectId, workLogId: created.id };
+  }
+
+  it('lets a project manager flip visibility with the optimistic token', async () => {
+    const { managerId, workLogId } = await seedProjectWithLog();
+
+    await service.setVisibility(managerId, workLogId, {
+      visibility: 'PROJECT_VISIBLE',
+      version: 1,
+    });
+
+    const log = await prisma.workLog.findUniqueOrThrow({ where: { id: workLogId } });
+    expect(log.visibility).toBe('PROJECT_VISIBLE');
+    expect(log.version).toBe(2);
+  });
+
+  it('rejects a plain member and keeps the stored visibility unchanged', async () => {
+    const { memberId, workLogId } = await seedProjectWithLog();
+
+    await expect(
+      service.setVisibility(memberId, workLogId, { visibility: 'PROJECT_VISIBLE', version: 1 }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    const log = await prisma.workLog.findUniqueOrThrow({ where: { id: workLogId } });
+    expect(log.visibility).toBe('PRIVATE');
+  });
+
+  it('returns metadata only (no content, no attachments) for the manager', async () => {
+    const { managerId, projectId, workLogId } = await seedProjectWithLog();
+
+    const page = await service.listVisibilityMetadata(managerId, projectId, {
+      page: 1,
+      pageSize: 10,
+    });
+
+    expect(page.total).toBe(1);
+    expect(page.items).toEqual([{ id: workLogId, visibility: 'PRIVATE', version: 1 }]);
+    // 元数据里不得出现正文/历史/附件字段。
+    expect(Object.keys(page.items[0]!)).toEqual(['id', 'visibility', 'version']);
+  });
+
+  it('rejects a capability holder who is not a member of that project', async () => {
+    const { workLogId, projectId } = await seedProjectWithLog();
+    const outsiderId = await createUser('outsider-capability');
+    // 授予全局 worklog:manage：仍必须受项目成员身份约束（用户 2026-11-07 决定）。
+    // 角色 key 随机化 + finally 清理：该用例必须能在同一个库上重复运行。
+    const roleKey = `WORKLOG_MANAGER_PROBE_${randomUUID().slice(0, 8)}`;
+    const role = await prisma.systemRole.create({
+      data: { key: roleKey, name: '临时角色' },
+    });
+    try {
+      const permission = await prisma.permission.upsert({
+        where: { key: 'worklog:manage' },
+        update: {},
+        create: { key: 'worklog:manage', description: '管理工作日志（项目内）' },
+      });
+      await prisma.rolePermission.create({
+        data: { systemRoleId: role.id, permissionId: permission.id },
+      });
+      await prisma.userSystemRole.create({
+        data: { userId: outsiderId, systemRoleId: role.id },
+      });
+
+      await expect(
+        service.setVisibility(outsiderId, workLogId, {
+          visibility: 'PROJECT_VISIBLE',
+          version: 1,
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      await expect(
+        service.listVisibilityMetadata(outsiderId, projectId, { page: 1, pageSize: 10 }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    } finally {
+      await prisma.userSystemRole.deleteMany({ where: { systemRoleId: role.id } });
+      await prisma.rolePermission.deleteMany({ where: { systemRoleId: role.id } });
+      await prisma.systemRole.delete({ where: { id: role.id } }).catch(() => undefined);
+    }
+    const log = await prisma.workLog.findUniqueOrThrow({ where: { id: workLogId } });
+    expect(log.visibility).toBe('PRIVATE');
+  });
+
+  it('rejects a suspended account even with the project manager role', async () => {
+    const { managerId, workLogId, projectId } = await seedProjectWithLog();
+    await prisma.user.update({ where: { id: managerId }, data: { status: 'SUSPENDED' } });
+
+    // 权限内核必须把停用账号当作"没有项目作用域"（404，而不是 403）。
+    await expect(
+      service.setVisibility(managerId, workLogId, {
+        visibility: 'PROJECT_VISIBLE',
+        version: 1,
+      }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    await expect(
+      service.listVisibilityMetadata(managerId, projectId, { page: 1, pageSize: 10 }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    const log = await prisma.workLog.findUniqueOrThrow({ where: { id: workLogId } });
+    expect(log.visibility).toBe('PRIVATE');
+  });
+
+  it('rejects a stale version on visibility change and keeps the stored value', async () => {
+    const { managerId, workLogId } = await seedProjectWithLog();
+    await service.setVisibility(managerId, workLogId, {
+      visibility: 'PROJECT_VISIBLE',
+      version: 1,
+    });
+
+    await expect(
+      service.setVisibility(managerId, workLogId, { visibility: 'PRIVATE', version: 1 }),
+    ).rejects.toBeInstanceOf(ConflictException);
+    const log = await prisma.workLog.findUniqueOrThrow({ where: { id: workLogId } });
+    expect(log.visibility).toBe('PROJECT_VISIBLE');
+    expect(log.version).toBe(2);
+  });
+
+  it('lets a member holding worklog:manage change another author log', async () => {
+    const { projectId, workLogId } = await seedProjectWithLog();
+    const managerCapabilityId = await createUser('capability-holder');
+    await addMember(managerCapabilityId, projectId, ['MEMBER']);
+    const permission = await prisma.permission.upsert({
+      where: { key: 'worklog:manage' },
+      update: {},
+      create: { key: 'worklog:manage', description: '管理工作日志（项目内）' },
+    });
+    const roleKey = `WORKLOG_CAP_${randomUUID().slice(0, 8)}`;
+    const role = await prisma.systemRole.create({ data: { key: roleKey, name: '临时角色' } });
+    try {
+      await prisma.rolePermission.create({
+        data: { systemRoleId: role.id, permissionId: permission.id },
+      });
+      await prisma.userSystemRole.create({
+        data: { userId: managerCapabilityId, systemRoleId: role.id },
+      });
+
+      const result = await service.setVisibility(managerCapabilityId, workLogId, {
+        visibility: 'PROJECT_VISIBLE',
+        version: 1,
+      });
+      expect(result).toEqual({ id: workLogId, visibility: 'PROJECT_VISIBLE', version: 2 });
+    } finally {
+      await prisma.userSystemRole.deleteMany({ where: { systemRoleId: role.id } });
+      await prisma.rolePermission.deleteMany({ where: { systemRoleId: role.id } });
+      await prisma.systemRole.delete({ where: { id: role.id } }).catch(() => undefined);
+    }
+  });
+
+  it('denies the metadata endpoint to a plain member', async () => {
+    const { memberId, projectId } = await seedProjectWithLog();
+
+    await expect(
+      service.listVisibilityMetadata(memberId, projectId, { page: 1, pageSize: 10 }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
   });
 });
