@@ -458,6 +458,7 @@ model WorkLog {
   orderItem      OrderItem?       @relation(fields: [orderItemId], references: [id])
   currentVersion WorkLogVersion?  @relation("WorkLogCurrentVersion", fields: [currentVersionId], references: [id])
   versions       WorkLogVersion[] @relation("WorkLogVersions")
+  attachments    Attachment[]
 
   @@index([authorId])
   @@index([projectId])
@@ -550,6 +551,7 @@ model Attachment {
   sizeBytes               Int              @map("size_bytes")
   sha256                  String           @map("sha256")
   uploadedById            String           @map("uploaded_by_id")
+  workLogId               String?          @map("work_log_id")
   resourceType            String           @map("resource_type")
   resourceId              String           @map("resource_id")
   customerId              String?          @map("customer_id")
@@ -565,9 +567,11 @@ model Attachment {
   storageCleanupLastError String?          @map("storage_cleanup_last_error")
 
   uploadedBy User      @relation(fields: [uploadedById], references: [id])
+  workLog     WorkLog? @relation(fields: [workLogId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   customer   Customer? @relation(fields: [customerId], references: [id], onDelete: Restrict, onUpdate: Cascade)
 
   @@index([uploadedById])
+  @@index([workLogId])
   @@index([customerId])
   @@index([resourceType, resourceId])
   @@index([status, storageDeletedAt, storageCleanupAttempts], map: "attachments_cleanup_pending_idx")

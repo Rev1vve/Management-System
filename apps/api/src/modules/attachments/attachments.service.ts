@@ -470,11 +470,58 @@ export class AttachmentsService implements OnApplicationBootstrap {
     const validated = this.validateFile(file);
     const id = this.createStorageId();
     const storageKey = `customer-contract/${id.slice(0, 2)}/${id}${validated.extension}`;
-    const finalPath = this.resolveStoragePath(storageKey);
 
+    const pendingId = await this.storeAttachmentFile({
+      userId,
+      file,
+      validated,
+      storageKey,
+      createData: {
+        resourceType: CUSTOMER_CONTRACT,
+        resourceId: customerId,
+        customer: { connect: this.currentCustomerManager(userId, customerId) },
+      },
+      onRelationLost: async () => {
+        // Re-evaluate current scope to preserve the 403/404 contract after a
+        // concurrent role or membership change. A transient missing relation
+        // that no longer reproduces is still fail-closed as not found.
+        await this.customers.assertCustomerManager(userId, customerId);
+        throw new NotFoundException('客户不存在');
+      },
+    });
+
+    try {
+      return await this.activatePendingUpload(pendingId, userId, customerId, true);
+    } catch (error) {
+      // The activation outcome may be ambiguous after a database transport error.
+      // Keep the durable row and file; startup reconciliation only processes rows
+      // that are still PENDING, so a committed ACTIVE row is never deleted here.
+      await this.recordStorageCleanupFailure(pendingId, error, 'PENDING');
+      throw error;
+    }
+  }
+
+  /**
+   * 通用"落盘 + 发布"管道（客户合同与工作日志附件共用）。
+   *
+   * 只做存储侧：创建 PENDING 行 → 写临时文件并 fsync → 记录身份 → 硬链接发布 →
+   * 标记 published → 清理临时文件。授权与激活由调用方负责，避免把资源语义塞进存储层。
+   * 返回 pendingId；失败时按既有补偿逻辑收尾并抛出原始错误。
+   */
+  async storeAttachmentFile(params: {
+    userId: string;
+    file: BufferedUpload;
+    validated: { originalName: string; extension: string; mime: string };
+    storageKey: string;
+    createData: Record<string, unknown>;
+    onRelationLost: () => Promise<never>;
+  }): Promise<string> {
+    const { userId, file, validated, storageKey, createData, onRelationLost } = params;
+    const finalPath = this.resolveStoragePath(storageKey);
     let pendingId: string | null = null;
     let publication: PendingPublication = 'NONE';
     let directories: DirectoryAnchor[] | null = null;
+
     try {
       let pending: { id: string };
       try {
@@ -486,27 +533,14 @@ export class AttachmentsService implements OnApplicationBootstrap {
             sizeBytes: file.buffer.length,
             sha256: createHash('sha256').update(file.buffer).digest('hex'),
             uploadedBy: { connect: { id: userId } },
-            resourceType: CUSTOMER_CONTRACT,
-            resourceId: customerId,
-            customer: { connect: this.currentCustomerManager(userId, customerId) },
+            ...createData,
             status: 'PENDING',
             storagePublishedAt: null,
-          },
+          } as never,
           select: { id: true },
         });
       } catch (error) {
-        if (
-          typeof error === 'object' &&
-          error !== null &&
-          'code' in error &&
-          error.code === 'P2025'
-        ) {
-          // Re-evaluate current scope to preserve the 403/404 contract after a
-          // concurrent role or membership change. A transient missing relation
-          // that no longer reproduces is still fail-closed as not found.
-          await this.customers.assertCustomerManager(userId, customerId);
-          throw new NotFoundException('客户不存在');
-        }
+        if (this.isFsError(error, 'P2025')) await onRelationLost();
         throw error;
       }
       pendingId = pending.id;
@@ -534,16 +568,8 @@ export class AttachmentsService implements OnApplicationBootstrap {
       const tempInfo = await this.safePendingFileInfo(anchoredTempPath, '附件临时存储路径非法');
       if (!tempInfo) throw new Error('附件临时文件丢失');
       const identified = await this.prisma.attachment.updateMany({
-        where: {
-          id: pending.id,
-          status: 'PENDING',
-          storageDevice: null,
-          storageInode: null,
-        },
-        data: {
-          storageDevice: BigInt(tempInfo.dev),
-          storageInode: BigInt(tempInfo.ino),
-        },
+        where: { id: pending.id, status: 'PENDING', storageDevice: null, storageInode: null },
+        data: { storageDevice: BigInt(tempInfo.dev), storageInode: BigInt(tempInfo.ino) },
       });
       if (identified.count !== 1) throw new Error('附件文件身份状态冲突');
       publication = 'ATTEMPTED';
@@ -578,15 +604,7 @@ export class AttachmentsService implements OnApplicationBootstrap {
       if (directories) await this.closeDirectoryHandles(directories);
     }
 
-    try {
-      return await this.activatePendingUpload(pendingId!, userId, customerId, true);
-    } catch (error) {
-      // The activation outcome may be ambiguous after a database transport error.
-      // Keep the durable row and file; startup reconciliation only processes rows
-      // that are still PENDING, so a committed ACTIVE row is never deleted here.
-      await this.recordStorageCleanupFailure(pendingId!, error, 'PENDING');
-      throw error;
-    }
+    return pendingId!;
   }
 
   async list(userId: string, customerId: string) {
@@ -696,6 +714,61 @@ export class AttachmentsService implements OnApplicationBootstrap {
     };
   }
 
+  /**
+   * 通用"验证并打开已发布附件"（授权由调用方完成）：
+   * 重新校验目录链、文件元数据/ACL、持久化 dev/ino 身份，然后返回只读流。
+   * 客户合同与工作日志附件共用，避免两套身份校验逻辑漂移。
+   */
+  async openVerifiedAttachmentStream(attachment: {
+    id: string;
+    storageKey: string;
+    storageDevice: bigint | null;
+    storageInode: bigint | null;
+  }): Promise<{ stream: NodeJS.ReadableStream }> {
+    if (attachment.storageDevice === null || attachment.storageInode === null) {
+      throw new NotFoundException('附件不存在');
+    }
+    const path = this.resolveStoragePath(attachment.storageKey);
+    const directories = await this.openEntityDirectoryChain(dirname(path), false);
+    if (!directories) throw new NotFoundException('附件不存在');
+    const parent = directories.at(-1)!;
+    const anchoredPath = parent.child(basename(path));
+    const info = await lstat(anchoredPath).catch(() => null);
+    if (!info) {
+      await this.closeDirectoryHandles(directories);
+      throw new NotFoundException('附件不存在');
+    }
+    try {
+      this.assertPrivateFile(info);
+      await assertPrivateAclOnly(anchoredPath);
+    } catch (error) {
+      await this.closeDirectoryHandles(directories);
+      throw error;
+    }
+    const handle = await openPrivateFileRead(anchoredPath);
+    if (!handle) {
+      await this.closeDirectoryHandles(directories);
+      throw new NotFoundException('附件不存在');
+    }
+    try {
+      const opened = await handle.stat();
+      this.assertPrivateFile(opened);
+      if (
+        opened.dev !== info.dev ||
+        opened.ino !== info.ino ||
+        !this.matchesPersistedIdentity(opened, attachment.storageDevice, attachment.storageInode)
+      ) {
+        throw new BadRequestException('附件存储路径非法');
+      }
+    } catch (error) {
+      await handle.close();
+      await this.closeDirectoryHandles(directories);
+      throw error;
+    }
+    await this.closeDirectoryHandles(directories);
+    return { stream: handle.createReadStream({ autoClose: true }) };
+  }
+
   async archive(userId: string, customerId: string, attachmentId: string) {
     await this.customers.assertCustomerManager(userId, customerId);
     const attachment = await this.prisma.attachment.findFirst({
@@ -773,6 +846,7 @@ export class AttachmentsService implements OnApplicationBootstrap {
         id: true,
         uploadedById: true,
         customerId: true,
+        workLogId: true,
         storageKey: true,
         storagePublishedAt: true,
         storageDevice: true,
@@ -794,6 +868,7 @@ export class AttachmentsService implements OnApplicationBootstrap {
     id: string;
     uploadedById: string;
     customerId: string | null;
+    workLogId?: string | null;
     storageKey: string;
     storagePublishedAt: Date | null;
     storageDevice: bigint | null;
@@ -852,6 +927,27 @@ export class AttachmentsService implements OnApplicationBootstrap {
       if (tempInfo) {
         await this.removeStoragePath(tempPath, { force: true });
         await this.syncStorageDirectory(parent);
+      }
+      if (attachment.workLogId) {
+        // 工作日志附件：作者仍有效且日志仍是 DRAFT 才激活，否则保留 PENDING 证据。
+        const activated = await this.prisma.attachment.updateMany({
+          where: {
+            id: attachment.id,
+            workLogId: attachment.workLogId,
+            status: 'PENDING',
+            storagePublishedAt: { not: null },
+            workLog: {
+              is: { authorId: attachment.uploadedById, status: 'DRAFT', deletedAt: null },
+            },
+          },
+          data: { status: 'ACTIVE' },
+        });
+        if (activated.count !== 1) {
+          throw Object.assign(new Error('附件工作日志授权关系缺失'), {
+            code: 'PENDING_AUTHORIZATION_MISSING',
+          });
+        }
+        return;
       }
       if (!attachment.customerId) {
         throw Object.assign(new Error('附件客户授权关系缺失'), {
@@ -985,7 +1081,7 @@ export class AttachmentsService implements OnApplicationBootstrap {
     return 'UNKNOWN_STORAGE_ERROR';
   }
 
-  private validateFile(file: BufferedUpload) {
+  validateFile(file: BufferedUpload) {
     if (!file || !Buffer.isBuffer(file.buffer)) throw new BadRequestException('缺少附件');
     if (file.buffer.length === 0 || file.size !== file.buffer.length) {
       throw new BadRequestException('附件大小非法');
@@ -1003,8 +1099,9 @@ export class AttachmentsService implements OnApplicationBootstrap {
   }
 
   private resolveStoragePath(storageKey: string): string {
+    // 存储键按资源类型分区：客户合同 customer-contract/，工作日志附件 work-log/。
     if (
-      !/^customer-contract\/[0-9a-f]{2}\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:pdf|png|jpe?g|docx|xlsx)$/.test(
+      !/^(?:customer-contract|work-log)\/[0-9a-f]{2}\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:pdf|png|jpe?g|docx|xlsx)$/.test(
         storageKey,
       )
     ) {

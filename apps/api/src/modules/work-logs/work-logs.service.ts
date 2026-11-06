@@ -567,6 +567,17 @@ export class WorkLogsService {
         data: { frozenAt: new Date() },
       });
 
+      // 草稿附件与本次冻结版本原子绑定：退回后的新草稿自然不继承旧附件（D-D）。
+      await tx.attachment.updateMany({
+        where: {
+          workLogId: log.id,
+          status: 'ACTIVE',
+          deletedAt: null,
+          resourceType: 'WORK_LOG',
+        },
+        data: { resourceType: 'WORK_LOG_VERSION', resourceId: log.currentVersionId! },
+      });
+
       const request = await tx.approvalRequest.create({
         data: {
           workLogVersionId: log.currentVersionId!,

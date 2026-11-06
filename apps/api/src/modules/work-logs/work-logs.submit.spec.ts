@@ -19,6 +19,7 @@ function createPrismaMock(log: Record<string, unknown> | null = null) {
     approvalRequest: { create: vi.fn().mockResolvedValue({ id: 'approval-1' }) },
     projectMembership: { findFirst: vi.fn().mockResolvedValue({ id: 'membership-1' }) },
     workLogVersion: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    attachment: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
   };
   const prisma = {
     workLog: { findFirst: vi.fn().mockResolvedValue(log) },
@@ -91,6 +92,22 @@ describe('WorkLogsService submit', () => {
         data: { frozenAt: expect.any(Date) },
       }),
     );
+  });
+
+  it('binds draft attachments to the frozen version in the submission transaction', async () => {
+    const service = createService(prisma);
+
+    await service.submit('author-1', 'wl-1', { approverId: 'approver-1' });
+
+    expect(prisma.tx.attachment.updateMany).toHaveBeenCalledWith({
+      where: {
+        workLogId: 'wl-1',
+        status: 'ACTIVE',
+        deletedAt: null,
+        resourceType: 'WORK_LOG',
+      },
+      data: { resourceType: 'WORK_LOG_VERSION', resourceId: 'wlv-1' },
+    });
   });
 
   it('rejects a non-author with 404 and writes nothing', async () => {
