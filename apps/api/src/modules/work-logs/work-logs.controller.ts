@@ -1,8 +1,12 @@
-import { Body, Controller, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 
 import { PermissionsGuard } from '../authorization/permissions.guard';
-import { type CreateWorkLogInput, WorkLogsService } from './work-logs.service';
+import {
+  type CreateWorkLogInput,
+  type VersionContentInput,
+  WorkLogsService,
+} from './work-logs.service';
 
 type Authenticated = Request & { user: { id: string } };
 
@@ -38,5 +42,37 @@ export class WorkLogsController {
     return this.workLogs.submit(request.user.id, id, {
       approverId: body.approverId as string,
     });
+  }
+
+  /** 退回后开新版本（仅作者、仅 RETURNED）。 */
+  @Post('work-logs/:id/versions')
+  addVersion(
+    @Req() request: Authenticated,
+    @Param('id') id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    return this.workLogs.addVersion(request.user.id, id, body as unknown as VersionContentInput);
+  }
+
+  /** 编辑草稿当前版本（仅作者、仅 DRAFT）。 */
+  @Patch('work-logs/:id')
+  updateDraft(
+    @Req() request: Authenticated,
+    @Param('id') id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    const { version, ...content } = body;
+    return this.workLogs.updateDraft(
+      request.user.id,
+      id,
+      content as unknown as VersionContentInput,
+      version as number,
+    );
+  }
+
+  /** 日志详情（作者本人）：含乐观并发令牌 version 与当前版本内容。 */
+  @Get('work-logs/:id')
+  detail(@Req() request: Authenticated, @Param('id') id: string) {
+    return this.workLogs.getDetail(request.user.id, id);
   }
 }

@@ -217,3 +217,213 @@ describe('WorkLogsService.submit persistence', () => {
     expect(await prisma.approvalRequest.count()).toBe(1);
   });
 });
+
+describe('WorkLogsService versions (real PostgreSQL)', () => {
+  async function seedReturned() {
+    const authorId = await createUser('author');
+    const approverId = await createUser('approver');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    await addMember(approverId, projectId, ['APPROVER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+    await service.submit(authorId, created.id, { approverId });
+    await prisma.workLog.update({ where: { id: created.id }, data: { status: 'RETURNED' } });
+    return { authorId, projectId, workLogId: created.id };
+  }
+
+  it('adds versionNumber max+1 and leaves the previous version and approval history untouched', async () => {
+    const { authorId, workLogId } = await seedReturned();
+    const before = await prisma.workLogVersion.findMany({
+      where: { workLogId },
+      orderBy: { versionNumber: 'asc' },
+    });
+    const approvalsBefore = await prisma.approvalRequest.findMany({ where: {} });
+
+    const result = await service.addVersion(authorId, workLogId, {
+      workDate: '2026-11-07',
+      hours: 4.25,
+      completion: '按退回意见补充交付清单',
+    });
+
+    expect(result).toEqual({
+      id: workLogId,
+      status: 'DRAFT',
+      versionNumber: before.length + 1,
+      // createDraft=v1 → submit(+1)=2 → addVersion(+1)=3
+      version: 3,
+    });
+    const after = await prisma.workLogVersion.findMany({
+      where: { workLogId },
+      orderBy: { versionNumber: 'asc' },
+    });
+    expect(after).toHaveLength(before.length + 1);
+    // 旧版本逐字段不变
+    expect(after.slice(0, before.length)).toEqual(before);
+    const log = await prisma.workLog.findUniqueOrThrow({ where: { id: workLogId } });
+    expect(log.status).toBe('DRAFT');
+    expect(log.currentVersionId).toBe(after.at(-1)!.id);
+    // 审批历史一行不改
+    expect(await prisma.approvalRequest.findMany({ where: {} })).toEqual(approvalsBefore);
+  });
+
+  it('keeps only one new version under concurrent addVersion calls', async () => {
+    const { authorId, workLogId } = await seedReturned();
+    const content = { workDate: '2026-11-07', hours: 2, completion: '并发' };
+
+    const outcomes = await Promise.allSettled([
+      service.addVersion(authorId, workLogId, content),
+      service.addVersion(authorId, workLogId, content),
+    ]);
+
+    const fulfilled = outcomes.filter((o) => o.status === 'fulfilled');
+    const rejected = outcomes.filter((o) => o.status === 'rejected') as PromiseRejectedResult[];
+    expect(fulfilled).toHaveLength(1);
+    // 失败方必须是 409，不能把 P2002 漏成 500。
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.reason).toBeInstanceOf(ConflictException);
+    const versions = await prisma.workLogVersion.findMany({ where: { workLogId } });
+    expect(versions).toHaveLength(2);
+  });
+
+  it('edits the current draft version and bumps the optimistic version', async () => {
+    const authorId = await createUser('author');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+
+    await service.updateDraft(
+      authorId,
+      created.id,
+      { workDate: '2026-11-08', hours: 3.75, completion: '草稿编辑后的内容' },
+      1,
+    );
+
+    const log = await prisma.workLog.findUniqueOrThrow({
+      where: { id: created.id },
+      include: { currentVersion: true },
+    });
+    expect(log.version).toBe(2);
+    expect(log.currentVersion?.completion).toBe('草稿编辑后的内容');
+    expect(log.currentVersion?.hours.toString()).toBe('3.75');
+    expect(await prisma.workLogVersion.count({ where: { workLogId: created.id } })).toBe(1);
+  });
+
+  it('refuses to edit a submitted log', async () => {
+    const authorId = await createUser('author');
+    const approverId = await createUser('approver');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    await addMember(approverId, projectId, ['APPROVER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+    await service.submit(authorId, created.id, { approverId });
+
+    await expect(
+      service.updateDraft(
+        authorId,
+        created.id,
+        { workDate: '2026-11-08', hours: 1, completion: '不应生效' },
+        1,
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+    const log = await prisma.workLog.findUniqueOrThrow({
+      where: { id: created.id },
+      include: { currentVersion: true },
+    });
+    expect(log.currentVersion?.completion).toBe(draft.completion);
+  });
+
+  it('lets only one of two concurrent draft edits win (optimistic version)', async () => {
+    const authorId = await createUser('author');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+    const base = { workDate: '2026-11-08', hours: 2, completion: 'edit-A' };
+
+    const outcomes = await Promise.allSettled([
+      service.updateDraft(authorId, created.id, base, 1),
+      service.updateDraft(authorId, created.id, { ...base, completion: 'edit-B' }, 1),
+    ]);
+
+    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
+    const rejected = outcomes.filter((o) => o.status === 'rejected') as PromiseRejectedResult[];
+    expect(rejected[0]!.reason).toBeInstanceOf(ConflictException);
+    // 版次只前进一次，落库内容必须是获胜方写的，不能出现"两个都成功、后者覆盖前者"。
+    const log = await prisma.workLog.findUniqueOrThrow({
+      where: { id: created.id },
+      include: { currentVersion: true },
+    });
+    expect(log.version).toBe(2);
+    expect(['edit-A', 'edit-B']).toContain(log.currentVersion?.completion);
+  });
+
+  it('returns 404 for another user editing or adding versions', async () => {
+    const authorId = await createUser('author');
+    const outsiderId = await createUser('outsider');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+
+    await expect(
+      service.updateDraft(outsiderId, created.id, { ...draft }, 1),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.addVersion(outsiderId, created.id, { ...draft })).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+  });
+
+  it('persists the order reference and clears a stale item link (real PostgreSQL)', async () => {
+    const authorId = await createUser('author');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    const order = await prisma.order.create({
+      data: { number: 'ORD-0001', projectId, title: '订单甲', status: 'ACTIVE' },
+    });
+    const item = await prisma.orderItem.create({
+      data: { orderId: order.id, name: '交付项', quantity: 1, unit: '件' },
+    });
+    const created = await service.createDraft(authorId, {
+      ...draft,
+      projectId,
+      orderId: order.id,
+      orderItemId: item.id,
+    });
+    const withItem = await prisma.workLog.findUniqueOrThrow({ where: { id: created.id } });
+    expect(withItem.orderId).toBe(order.id);
+    expect(withItem.orderItemId).toBe(item.id);
+
+    // 只给 orderId → 旧的 orderItemId 必须被清空，不能留下跨订单引用。
+    await service.updateDraft(authorId, created.id, { ...draft, orderId: order.id }, 1);
+
+    const cleared = await prisma.workLog.findUniqueOrThrow({ where: { id: created.id } });
+    expect(cleared.orderId).toBe(order.id);
+    expect(cleared.orderItemId).toBeNull();
+  });
+
+  it('rejects another member of the same project with 404 (author filter, not membership)', async () => {
+    const authorId = await createUser('author');
+    const peerId = await createUser('peer');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    await addMember(peerId, projectId, ['MEMBER', 'PROJECT_MANAGER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+
+    await expect(service.updateDraft(peerId, created.id, { ...draft }, 1)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    await expect(service.getDetail(peerId, created.id)).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('exposes the optimistic version token through the detail endpoint', async () => {
+    const authorId = await createUser('author');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+
+    const detail = await service.getDetail(authorId, created.id);
+    expect(detail.version).toBe(1);
+    expect(detail.currentVersion?.versionNumber).toBe(1);
+
+    await service.updateDraft(authorId, created.id, { ...draft, hours: 2 }, detail.version!);
+    expect((await service.getDetail(authorId, created.id)).version).toBe(2);
+  });
+});

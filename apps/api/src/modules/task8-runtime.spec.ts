@@ -58,6 +58,16 @@ describe('task 8 work-log HTTP surface', () => {
         .post('/api/v1/work-logs/work-log-1/submit')
         .send({ approverId: 'approver-1' });
       expect(submit.status).toBe(401);
+
+      const newVersion = await request(app.getHttpServer())
+        .post('/api/v1/work-logs/work-log-1/versions')
+        .send({ workDate: '2026-11-07', hours: 1, completion: 'x' });
+      expect(newVersion.status).toBe(401);
+
+      const editDraft = await request(app.getHttpServer())
+        .patch('/api/v1/work-logs/work-log-1')
+        .send({ workDate: '2026-11-07', hours: 1, completion: 'x' });
+      expect(editDraft.status).toBe(401);
     } finally {
       await app.close();
     }

@@ -82,7 +82,12 @@ describe('WorkLogsService createDraft', () => {
 
     const result = await service.createDraft('user-1', baseInput);
 
-    expect(result).toEqual({ id: 'wl-1', number: 'WL-20260101-ABCDEF', versionNumber: 1 });
+    expect(result).toEqual({
+      id: 'wl-1',
+      number: 'WL-20260101-ABCDEF',
+      versionNumber: 1,
+      version: 1,
+    });
     expect(prisma.tx.workLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
