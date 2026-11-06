@@ -11,7 +11,7 @@
     "lint": "eslint .",
     "start": "node dist/main.js",
     "test": "prisma generate && node ../../infra/scripts/run-with-local-tmp.mjs vitest run && node ../../infra/scripts/run-with-local-tmp.mjs tsx test/runtime-smoke.ts",
-    "test:integration": "node ../../infra/scripts/run-with-local-tmp.mjs vitest run --config vitest.integration.config.mts",
+    "test:integration": "vitest run --config vitest.integration.config.mts",
     "typecheck": "prisma generate && tsc -p tsconfig.test.json"
   },
   "dependencies": {
