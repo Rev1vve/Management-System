@@ -1,4 +1,6 @@
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -156,7 +158,7 @@ describe('WorkLogAttachmentsService (real PostgreSQL + real filesystem)', () => 
       workLogAttachments.download(authorId, workLogId, stored.id),
     ).rejects.toBeInstanceOf(NotFoundException);
     await expect(workLogAttachments.archive(authorId, workLogId, stored.id)).rejects.toBeInstanceOf(
-      BadRequestException,
+      NotFoundException,
     );
   });
 
@@ -183,7 +185,110 @@ describe('WorkLogAttachmentsService (real PostgreSQL + real filesystem)', () => 
     await expect(workLogAttachments.upload(authorId, workLogId, upload())).rejects.toBeInstanceOf(
       ConflictException,
     );
-    // 已冻结到版本的附件不能再被草稿接口删除。
-    await expect(workLogAttachments.archive(authorId, workLogId, stored.id)).rejects.toBeTruthy();
+    // 日志已离开 DRAFT：草稿接口一律 409（与 upload 同口径）。
+    await expect(workLogAttachments.archive(authorId, workLogId, stored.id)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+  });
+});
+
+describe('WORK_LOG pending recovery', () => {
+  // 构造一条真实的 WORK_LOG PENDING 行（含已发布文件与 dev/ino 身份），
+  // 再跑启动 reconciliation，固定"作者仍 DRAFT 才激活、否则保留证据"的行为。
+  async function seedPending(logStatus: 'DRAFT' | 'SUBMITTED', authorStatus: 'ACTIVE' | 'INVITED') {
+    const authorId = await createUser(`author-${logStatus}-${authorStatus}`);
+    const projectId = await prisma.project
+      .create({
+        data: { number: `PRJ-${logStatus}-${authorStatus}`, name: '项目', status: 'ACTIVE' },
+      })
+      .then((p) => p.id);
+    const membership = await prisma.projectMembership.create({
+      data: { userId: authorId, projectId },
+    });
+    await prisma.projectMembershipRole.create({
+      data: { membershipId: membership.id, role: 'MEMBER' },
+    });
+    const created = await workLogs.createDraft(authorId, {
+      projectId,
+      workDate: '2026-11-06',
+      hours: 1,
+      completion: '草稿',
+    });
+    if (logStatus !== 'DRAFT') {
+      await prisma.$executeRaw`UPDATE "work_logs" SET "status" = ${logStatus} WHERE "id" = ${created.id}`;
+    }
+    if (authorStatus !== 'ACTIVE') {
+      await prisma.user.update({ where: { id: authorId }, data: { status: authorStatus } });
+    }
+
+    // 用真实存储管道写出一个"已发布但未激活"的待恢复行。
+    const id = randomUUID();
+    const storageKey = `work-log/${id.slice(0, 2)}/${id}.pdf`;
+    const pendingId = await attachments.storeAttachmentFile({
+      userId: authorId,
+      file: upload(),
+      validated: { originalName: 'evidence.pdf', extension: '.pdf', mime: 'application/pdf' },
+      storageKey,
+      createData: {
+        resourceType: 'WORK_LOG',
+        resourceId: created.id,
+        workLog: { connect: { id: created.id } },
+      },
+      onRelationLost: async () => {
+        throw new Error('relation lost');
+      },
+    });
+    // 预置失败痕迹，才能证明"恢复成功会清掉 attempts/lastError"（否则断言恒真）。
+    await prisma.attachment.update({
+      where: { id: pendingId },
+      data: { storageCleanupAttempts: 2, storageCleanupLastError: 'PENDING_AUTHORIZATION_MISSING' },
+    });
+    return { authorId, workLogId: created.id, pendingId };
+  }
+
+  it('activates a pending work-log attachment while the author log is still DRAFT', async () => {
+    const { pendingId } = await seedPending('DRAFT', 'ACTIVE');
+
+    await attachments.onApplicationBootstrap();
+
+    const row = await prisma.attachment.findUniqueOrThrow({ where: { id: pendingId } });
+    expect(row.status).toBe('ACTIVE');
+    expect(row.storageCleanupAttempts).toBe(0);
+    expect(row.storageCleanupLastError).toBeNull();
+  });
+
+  it('keeps the pending row and file when the log already left DRAFT', async () => {
+    const { pendingId } = await seedPending('SUBMITTED', 'ACTIVE');
+
+    await attachments.onApplicationBootstrap();
+
+    const row = await prisma.attachment.findUniqueOrThrow({ where: { id: pendingId } });
+    expect(row.status).toBe('PENDING');
+    expect(row.storageCleanupAttempts).toBeGreaterThan(0);
+    expect(row.storageCleanupLastError).toBe('PENDING_AUTHORIZATION_MISSING');
+    // 证据必须保留：PENDING 行对应的文件仍然存在（身份校验可打开它）。
+    const { stream } = await attachments.openVerifiedAttachmentStream(row);
+    expect(stream).toBeTruthy();
+    (stream as unknown as { destroy: () => void }).destroy();
+  });
+
+  it('keeps the pending row when the author account is no longer active', async () => {
+    const { pendingId } = await seedPending('DRAFT', 'INVITED');
+
+    await attachments.onApplicationBootstrap();
+
+    const row = await prisma.attachment.findUniqueOrThrow({ where: { id: pendingId } });
+    expect(row.status).toBe('PENDING');
+    expect(row.storageCleanupLastError).toBe('PENDING_AUTHORIZATION_MISSING');
+  });
+
+  it('archives an unbound draft attachment successfully', async () => {
+    const { authorId, workLogId } = await seedDraft();
+    const stored = await workLogAttachments.upload(authorId, workLogId, upload());
+
+    await expect(workLogAttachments.archive(authorId, workLogId, stored.id)).resolves.toEqual({
+      ok: true,
+    });
+    expect(await workLogAttachments.list(authorId, workLogId)).toHaveLength(0);
   });
 });

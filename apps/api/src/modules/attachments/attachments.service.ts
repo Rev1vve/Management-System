@@ -937,10 +937,16 @@ export class AttachmentsService implements OnApplicationBootstrap {
             status: 'PENDING',
             storagePublishedAt: { not: null },
             workLog: {
-              is: { authorId: attachment.uploadedById, status: 'DRAFT', deletedAt: null },
+              is: {
+                authorId: attachment.uploadedById,
+                status: 'DRAFT',
+                deletedAt: null,
+                author: { status: 'ACTIVE', deletedAt: null },
+              },
             },
           },
-          data: { status: 'ACTIVE' },
+          // 与客户合同路径一致：激活成功要清掉重试计数与历史错误码。
+          data: { status: 'ACTIVE', storageCleanupAttempts: 0, storageCleanupLastError: null },
         });
         if (activated.count !== 1) {
           throw Object.assign(new Error('附件工作日志授权关系缺失'), {

@@ -1,9 +1,4 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 
 import { PrismaService } from '../../database/prisma.service';
@@ -180,7 +175,10 @@ export class WorkLogAttachmentsService {
         storageCleanupLastError: null,
       },
     });
-    if (archived.count !== 1) throw new BadRequestException('附件不存在或已冻结');
+    if (archived.count !== 1) {
+      // 与其他端点一致：跨日志/不存在/已冻结都按不可见处理，避免泄露存在性。
+      throw new NotFoundException('附件不存在');
+    }
     return { ok: true };
   }
 }

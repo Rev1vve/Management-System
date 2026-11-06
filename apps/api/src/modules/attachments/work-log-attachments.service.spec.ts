@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { ConflictException, NotFoundException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 
 import { WorkLogAttachmentsService } from './work-log-attachments.service';
@@ -140,7 +140,7 @@ describe('WorkLogAttachmentsService', () => {
     const { service } = createService(prisma);
 
     await expect(service.archive('author-1', 'wl-1', 'a1')).rejects.toBeInstanceOf(
-      BadRequestException,
+      NotFoundException,
     );
   });
 });
