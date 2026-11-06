@@ -8,6 +8,7 @@ import request, { type Response } from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AppModule } from '../../src/app.module';
+import { installWindowsAclAllowlist } from '../../src/testing/windows-acl-allowlist';
 import { randomToken, sha256Hex } from '../../src/crypto/token.util';
 import { PrismaService } from '../../src/database/prisma.service';
 import { AttachmentsService } from '../../src/modules/attachments/attachments.service';
@@ -112,6 +113,7 @@ function parseBinary(
 }
 
 beforeAll(async () => {
+  await installWindowsAclAllowlist();
   attachmentRoot = await mkdtemp(join(tmpdir(), 'poc-task7-http-'));
   process.env.ATTACHMENTS_ROOT = attachmentRoot;
   process.env.MFA_SECRET_KEY = '11'.repeat(32);

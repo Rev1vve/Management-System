@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -48,11 +49,60 @@ def run(command: list[str], *, env: dict[str, str] | None = None) -> subprocess.
     )
 
 
+def _has_gnu_toolchain() -> bool:
+    """POSIX 契约要求「POSIX 平台 + GNU coreutils」，两者缺一不可。
+
+    只探测工具存在是不够的：Git for Windows / MSYS 也提供 bash + GNU coreutils，
+    但路径分隔符、换行、rmdir 与 `mv -nT` 语义仍不同，契约会红而非跳过
+    （2026-11-06 实测 3 failures + 1 error）。因此这里同时要求非 Windows 平台；
+    macOS 因为缺少 sha256sum / GNU mv 也会被判为不可用。
+    """
+    if os.name == "nt":
+        return False
+    required = ("bash", "sha256sum", "mv", "tar", "sed")
+    if any(shutil.which(name) is None for name in required):
+        return False
+    probe = subprocess.run(
+        ["mv", "--version"], capture_output=True, text=True, check=False
+    )
+    return "GNU coreutils" in (probe.stdout or "")
+
+
+POSIX_SHELL = _has_gnu_toolchain()
+
+# 依赖缺失时跳过（并写明真实依赖），由 ubuntu-latest CI 覆盖。
+requires_posix_shell = unittest.skipUnless(
+    POSIX_SHELL,
+    "需要 POSIX shell + GNU coreutils（bash/sha256sum/GNU mv/tar/sed）；本机缺失时跳过，由 ubuntu-latest CI 覆盖",
+)
+requires_docker = unittest.skipUnless(
+    shutil.which("docker") is not None,
+    "需要 Docker CLI；本机未安装，由 ubuntu-latest CI 覆盖",
+)
+
+
+class PosixToolchainAvailabilityTests(unittest.TestCase):
+    """防止"工具缺失 → 静默跳过"把 10 项契约变成永远不跑。
+
+    CI（ubuntu-latest）必须真的具备 POSIX + GNU coreutils；一旦镜像变化导致缺失，
+    这里会红，而不是让契约悄悄变成 skipped。
+    """
+
+    def test_linux_ci_has_posix_toolchain(self) -> None:
+        if not sys.platform.startswith("linux"):
+            self.skipTest("仅约束 Linux CI 环境")
+        self.assertTrue(
+            POSIX_SHELL,
+            "Linux 上必须能执行 POSIX 契约（缺 bash/sha256sum/GNU mv/tar/sed 之一）",
+        )
+
+
 class InfrastructureContractTests(unittest.TestCase):
     def test_expected_task_two_files_exist(self) -> None:
         missing = [str(path.relative_to(ROOT)) for path in EXPECTED_FILES if not path.is_file()]
         self.assertEqual(missing, [], f"missing task 2 files: {missing}")
 
+    @requires_docker
     def test_compose_configs_render_with_private_database_network(self) -> None:
         self.assertIsNotNone(shutil.which("docker"), "docker CLI is required for Compose validation")
 
@@ -346,6 +396,7 @@ class InfrastructureContractTests(unittest.TestCase):
             command_snippet = documentation[command_start : command_start + 220]
             self.assertIn("--backup-dir", command_snippet)
 
+    @requires_posix_shell
     def test_backup_directory_must_be_outside_repository(self) -> None:
         library = INFRA / "scripts" / "lib.sh"
         result = run(
@@ -440,6 +491,7 @@ printf 'verification=PASS\\n'
             "verify-attachments.sh", "attachment_backup_restore_verification=PASS"
         )
 
+    @requires_posix_shell
     def test_backup_publication_never_clobbers_existing_artifacts(self) -> None:
         library = INFRA / "scripts" / "lib.sh"
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -479,6 +531,7 @@ printf 'verification=PASS\\n'
             self.assertIn("new_backup_id", text)
             self.assertIn("publish_backup_pair", text)
 
+    @requires_posix_shell
     def test_concurrent_backup_publication_has_exactly_one_winner(self) -> None:
         library = INFRA / "scripts" / "lib.sh"
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -629,6 +682,7 @@ printf 'verification=PASS\\n'
         )
         self.assertIn("caddy fmt --diff", verification)
 
+    @requires_posix_shell
     def test_shell_scripts_are_syntactically_valid_and_help_without_docker(self) -> None:
         for script in SCRIPT_FILES:
             self.assertTrue(script.is_file(), f"missing {script}")
@@ -651,6 +705,7 @@ printf 'verification=PASS\\n'
                     unquoted.append(f"{script.name}:{line_number}:{line}")
         self.assertEqual(unquoted, [])
 
+    @requires_posix_shell
     def test_restore_rejects_unsafe_database_identifier_before_docker_access(self) -> None:
         script = INFRA / "scripts" / "restore.sh"
         self.assertTrue(script.is_file(), f"missing {script}")
@@ -661,6 +716,7 @@ printf 'verification=PASS\\n'
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("valid PostgreSQL identifier", result.stderr)
 
+    @requires_posix_shell
     def test_checksum_sidecar_is_bound_to_selected_backup_file(self) -> None:
         library = INFRA / "scripts" / "lib.sh"
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -687,6 +743,7 @@ printf 'verification=PASS\\n'
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("does not match selected backup file", result.stderr)
 
+    @requires_posix_shell
     def test_checksum_sidecar_is_required_and_well_formed(self) -> None:
         library = INFRA / "scripts" / "lib.sh"
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -720,6 +777,7 @@ printf 'verification=PASS\\n'
             self.assertNotEqual(malformed.returncode, 0)
             self.assertIn("malformed checksum sidecar", malformed.stderr)
 
+    @requires_posix_shell
     def test_checksum_accepts_gnu_escaped_special_paths(self) -> None:
         library = INFRA / "scripts" / "lib.sh"
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -746,6 +804,7 @@ printf 'verification=PASS\\n'
             text = (INFRA / "scripts" / script_name).read_text(encoding="utf-8")
             self.assertIn('sha256sum < "$temporary_path"', text)
 
+    @requires_posix_shell
     def test_restore_uses_anonymous_verified_snapshot(self) -> None:
         library = INFRA / "scripts" / "lib.sh"
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -797,6 +856,7 @@ printf 'verification=PASS\\n'
         self.assertIn("partially restored database may remain", text)
         self.assertNotIn('"$target_database" || true', text)
 
+    @requires_posix_shell
     def test_attachment_restore_rejects_unsafe_archive_members_before_docker(self) -> None:
         script = INFRA / "scripts" / "restore-attachments.sh"
         self.assertTrue(script.is_file(), f"missing {script}")

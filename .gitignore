@@ -29,3 +29,6 @@ project-operations-attachments-*.tar.gz.sha256
 .DS_Store
 .idea/
 .vscode/
+
+# Local project ledger (never committed)
+.hermes/

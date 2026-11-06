@@ -1,9 +1,10 @@
+import { installWindowsAclAllowlist } from '../testing/windows-acl-allowlist';
 import { Test } from '@nestjs/testing';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import request from 'supertest';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, beforeAll } from 'vitest';
 
 import { AppModule } from '../app.module';
 import { PrismaService } from '../database/prisma.service';
@@ -23,6 +24,8 @@ afterEach(async () => {
   else process.env.ATTACHMENTS_ROOT = previousRoot;
   await rm(attachmentsRoot, { recursive: true, force: true });
 });
+
+beforeAll(installWindowsAclAllowlist);
 
 describe('task 7 runtime routes', () => {
   it('registers business and contract-attachment routes behind authentication', async () => {

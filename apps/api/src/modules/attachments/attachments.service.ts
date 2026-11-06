@@ -7,15 +7,27 @@ import {
   type OnApplicationBootstrap,
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
-import { constants, type Stats } from 'node:fs';
+import { type Stats } from 'node:fs';
 import { type ChildProcess, spawn } from 'node:child_process';
-import { type FileHandle, link, lstat, mkdir, open, realpath, rm, rmdir } from 'node:fs/promises';
+import { link, lstat, mkdir, open, rm, rmdir } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { inflateRawSync } from 'node:zlib';
 
 import { PrismaService } from '../../database/prisma.service';
 import { PERMISSIONS } from '../authorization/permission.constants';
 import { CustomersService } from '../customers/customers.service';
+import {
+  assertPrivateDirectory as assertPrivateDirectoryMetadata,
+  assertPrivateDirectoryPath,
+  assertPrivateFile as assertPrivateFileMetadata,
+  assertPrivateAclOnly,
+  type DirectoryAnchor,
+  openPrivateDirectory,
+  openPrivateFileRead,
+  requireAnchoredStorage,
+  STORAGE_PLATFORM,
+  uploadTempOpenFlags,
+} from './storage-platform';
 
 export const ATTACHMENTS_ROOT = Symbol('ATTACHMENTS_ROOT');
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -318,6 +330,16 @@ export function validateAttachmentsRoot(value: string | undefined): string {
   return normalized;
 }
 
+const MOVE_ERROR_MESSAGE = '附件清理原子移动失败';
+
+function moveFailure(error: unknown, fallbackCode: string): Error {
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code?: unknown }).code)
+      : fallbackCode;
+  return Object.assign(new Error(MOVE_ERROR_MESSAGE), { code });
+}
+
 @Injectable()
 export class AttachmentsService implements OnApplicationBootstrap {
   private readonly logger = new Logger(AttachmentsService.name);
@@ -340,15 +362,11 @@ export class AttachmentsService implements OnApplicationBootstrap {
   }
 
   protected openUploadTemp(path: string) {
-    return open(
-      path,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-      0o600,
-    );
+    return open(path, uploadTempOpenFlags(), 0o600);
   }
 
-  protected syncStorageDirectory(handle: Pick<FileHandle, 'sync'>): Promise<void> {
-    return handle.sync();
+  protected syncStorageDirectory(anchor: DirectoryAnchor): Promise<void> {
+    return anchor.sync();
   }
 
   protected moveStoragePathNoReplace(
@@ -356,8 +374,23 @@ export class AttachmentsService implements OnApplicationBootstrap {
     destination: string,
     directoryFd?: number,
   ): Promise<void> {
-    if (process.platform !== 'linux') {
-      return Promise.reject(new Error('附件安全清理仅支持 Linux renameat2 语义'));
+    requireAnchoredStorage();
+    if (STORAGE_PLATFORM === 'win32') {
+      // 硬链接建立失败（EEXIST）即目标已存在，天然 no-clobber；
+      // 链接成功后再删除源，等价于 `mv -nT` 的"绝不覆盖"语义。
+      // 删除失败（例如仍有打开句柄）必须与 Linux 的 MV_EXIT_* 一样统一错误形状，
+      // 由上层按"清理未完成"记录，而不是把原始 fs 错误直接抛给调用方。
+      return link(source, destination).then(
+        () =>
+          this.removeStoragePath(source).catch((error: unknown) => {
+            // 链接已建立但源未删除：必须与 LINK_FAILED 一样走统一错误形状，
+            // 上层据此记录"清理未完成"，而不是把原始 fs 错误直接抛出。
+            throw moveFailure(error, 'UNLINK_FAILED');
+          }),
+        (error: unknown) => {
+          throw moveFailure(error, 'LINK_FAILED');
+        },
+      );
     }
     return new Promise((resolveMove, rejectMove) => {
       // File descriptors opened by Node are close-on-exec. Explicitly duplicate
@@ -385,7 +418,7 @@ export class AttachmentsService implements OnApplicationBootstrap {
           return;
         }
         rejectMove(
-          Object.assign(new Error('附件清理原子移动失败'), {
+          Object.assign(new Error(MOVE_ERROR_MESSAGE), {
             code: signal ? `SIGNAL_${signal}` : `MV_EXIT_${code ?? 'UNKNOWN'}`,
           }),
         );
@@ -441,7 +474,7 @@ export class AttachmentsService implements OnApplicationBootstrap {
 
     let pendingId: string | null = null;
     let publication: PendingPublication = 'NONE';
-    let directories: FileHandle[] | null = null;
+    let directories: DirectoryAnchor[] | null = null;
     try {
       let pending: { id: string };
       try {
@@ -481,9 +514,8 @@ export class AttachmentsService implements OnApplicationBootstrap {
       directories = await this.openEntityDirectoryChain(dirname(finalPath), true);
       if (!directories) throw new BadRequestException('附件目录必须是私有实体目录');
       const parent = directories.at(-1)!;
-      const anchoredDirectory = `/proc/self/fd/${parent.fd}`;
-      const anchoredFinalPath = join(anchoredDirectory, basename(finalPath));
-      const anchoredTempPath = join(anchoredDirectory, this.pendingUploadTempName(finalPath));
+      const anchoredFinalPath = parent.child(basename(finalPath));
+      const anchoredTempPath = parent.child(this.pendingUploadTempName(finalPath));
       const handle = await this.openUploadTemp(anchoredTempPath);
       let primaryError: unknown;
       try {
@@ -620,21 +652,21 @@ export class AttachmentsService implements OnApplicationBootstrap {
     const directories = await this.openEntityDirectoryChain(dirname(path), false);
     if (!directories) throw new NotFoundException('附件不存在');
     const parent = directories.at(-1)!;
-    const anchoredPath = join(`/proc/self/fd/${parent.fd}`, basename(path));
+    const anchoredPath = parent.child(basename(path));
     const info = await lstat(anchoredPath).catch(() => null);
     if (!info) {
       await this.closeDirectoryHandles(directories);
       throw new NotFoundException('附件不存在');
     }
     try {
+      // 类型与身份用同一次 lstat；ACL 单独查（不重复 stat）。
       this.assertPrivateFile(info);
+      await assertPrivateAclOnly(anchoredPath);
     } catch (error) {
       await this.closeDirectoryHandles(directories);
       throw error;
     }
-    const handle = await open(anchoredPath, constants.O_RDONLY | constants.O_NOFOLLOW).catch(
-      () => null,
-    );
+    const handle = await openPrivateFileRead(anchoredPath);
     if (!handle) {
       await this.closeDirectoryHandles(directories);
       throw new NotFoundException('附件不存在');
@@ -775,9 +807,8 @@ export class AttachmentsService implements OnApplicationBootstrap {
       });
     }
     const parent = directories.at(-1)!;
-    const anchoredDirectory = `/proc/self/fd/${parent.fd}`;
-    const finalPath = join(anchoredDirectory, basename(path));
-    const tempPath = join(anchoredDirectory, this.pendingUploadTempName(path));
+    const finalPath = parent.child(basename(path));
+    const tempPath = parent.child(this.pendingUploadTempName(path));
     try {
       const finalInfo = await this.safePendingFileInfo(finalPath, '附件存储路径非法');
       const tempInfo = await this.safePendingFileInfo(tempPath, '附件临时存储路径非法');
@@ -994,32 +1025,23 @@ export class AttachmentsService implements OnApplicationBootstrap {
   private async openEntityDirectoryChain(
     directory: string,
     create: boolean,
-  ): Promise<FileHandle[] | null> {
+  ): Promise<DirectoryAnchor[] | null> {
     await this.ensureStorageRoot();
     const components = this.relativeDirectoryComponents(directory);
-    const handles: FileHandle[] = [];
+    const anchors: DirectoryAnchor[] = [];
     try {
       const rootInfo = await lstat(this.root);
       this.assertPrivateDirectory(rootInfo);
-      const rootHandle = await open(
-        this.root,
-        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-      );
-      const openedRoot = await rootHandle.stat();
+      const rootAnchor = await openPrivateDirectory(this.root);
+      const openedRoot = await rootAnchor.stat();
       if (openedRoot.dev !== rootInfo.dev || openedRoot.ino !== rootInfo.ino) {
-        await rootHandle.close();
+        await rootAnchor.close();
         throw new BadRequestException('附件目录必须是私有实体目录');
       }
-      try {
-        this.assertPrivateDirectory(openedRoot);
-      } catch (error) {
-        await rootHandle.close();
-        throw error;
-      }
-      handles.push(rootHandle);
+      anchors.push(rootAnchor);
       for (const component of components) {
-        const parent = handles.at(-1)!;
-        const child = join(`/proc/self/fd/${parent.fd}`, component);
+        const parent = anchors.at(-1)!;
+        const child = parent.child(component);
         if (create) {
           await mkdir(child, { mode: 0o700 }).catch((error: unknown) => {
             if (!this.isFsError(error, 'EEXIST')) throw error;
@@ -1030,36 +1052,27 @@ export class AttachmentsService implements OnApplicationBootstrap {
           throw error;
         });
         if (!info) {
-          await this.closeDirectoryHandles(handles);
+          await this.closeDirectoryHandles(anchors);
           return null;
         }
         this.assertPrivateDirectory(info);
-        const handle = await open(
-          child,
-          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-        );
-        const opened = await handle.stat();
+        const anchor = await openPrivateDirectory(child);
+        const opened = await anchor.stat();
         if (opened.dev !== info.dev || opened.ino !== info.ino) {
-          await handle.close();
+          await anchor.close();
           throw new BadRequestException('附件目录必须是私有实体目录');
         }
-        try {
-          this.assertPrivateDirectory(opened);
-        } catch (error) {
-          await handle.close();
-          throw error;
-        }
-        handles.push(handle);
+        anchors.push(anchor);
       }
-      return handles;
+      return anchors;
     } catch (error) {
-      await this.closeDirectoryHandles(handles);
+      await this.closeDirectoryHandles(anchors);
       throw error;
     }
   }
 
-  private async closeDirectoryHandles(handles: FileHandle[]): Promise<void> {
-    await Promise.all(handles.toReversed().map((handle) => handle.close().catch(() => undefined)));
+  private async closeDirectoryHandles(anchors: DirectoryAnchor[]): Promise<void> {
+    await Promise.all(anchors.toReversed().map((anchor) => anchor.close().catch(() => undefined)));
   }
 
   private relativeDirectoryComponents(directory: string): string[] {
@@ -1073,43 +1086,24 @@ export class AttachmentsService implements OnApplicationBootstrap {
   }
 
   private async assertEntityDirectory(directory: string): Promise<void> {
-    const info = await lstat(directory).catch(() => null);
-    if (!info) throw new BadRequestException('附件目录必须是私有实体目录');
-    this.assertPrivateDirectory(info);
-    const canonical = await realpath(directory).catch(() => null);
-    if (canonical !== directory) throw new BadRequestException('附件目录必须是私有实体目录');
+    try {
+      await assertPrivateDirectoryPath(directory);
+    } catch (error) {
+      if (error instanceof BadRequestException) throw error;
+      // 原始错误（含绝对路径/errno）只进服务端日志；对外统一静态文案，避免向已登录用户
+      // 泄漏附件根路径。storageCleanupErrorCode 仍保留在记录链路里。
+      const detail = error instanceof Error ? error.message : String(error);
+      this.logger.error(`附件目录校验失败：${detail.slice(0, 200)}`);
+      throw new BadRequestException('附件目录必须是私有实体目录');
+    }
   }
 
   private assertPrivateDirectory(info: Stats): void {
-    const uid = process.getuid?.();
-    const gid = process.getgid?.();
-    if (
-      uid === undefined ||
-      gid === undefined ||
-      !info.isDirectory() ||
-      info.isSymbolicLink() ||
-      info.uid !== uid ||
-      info.gid !== gid ||
-      (info.mode & 0o777) !== 0o700
-    ) {
-      throw new BadRequestException('附件目录必须由运行用户拥有且权限为 0700');
-    }
+    assertPrivateDirectoryMetadata(info);
   }
 
   private assertPrivateFile(info: Stats): void {
-    const uid = process.getuid?.();
-    const gid = process.getgid?.();
-    if (
-      uid === undefined ||
-      gid === undefined ||
-      !info.isFile() ||
-      info.isSymbolicLink() ||
-      info.uid !== uid ||
-      info.gid !== gid ||
-      (info.mode & 0o7777) !== 0o600
-    ) {
-      throw new BadRequestException('附件文件必须由运行用户拥有且权限为 0600');
-    }
+    assertPrivateFileMetadata(info);
   }
 
   private isFsError(error: unknown, code: string): boolean {
@@ -1127,7 +1121,9 @@ export class AttachmentsService implements OnApplicationBootstrap {
     });
     if (info) {
       try {
-        this.assertPrivateFile(info);
+        // 类型/身份用同一次 stat 判定；Windows 再单独校验 ACL（不重复 stat）。
+        assertPrivateFileMetadata(info);
+        await assertPrivateAclOnly(path);
       } catch {
         throw new BadRequestException(message);
       }
@@ -1147,7 +1143,7 @@ export class AttachmentsService implements OnApplicationBootstrap {
     const directories = await this.openEntityDirectoryChain(dirname(path), false);
     if (!directories) return;
     const parent = directories.at(-1)!;
-    const anchoredTempPath = join(`/proc/self/fd/${parent.fd}`, this.pendingUploadTempName(path));
+    const anchoredTempPath = parent.child(this.pendingUploadTempName(path));
     try {
       const info = await this.safePendingFileInfo(anchoredTempPath, '附件临时存储路径非法');
       if (info) await this.removeStoragePath(anchoredTempPath, { force: true });
@@ -1173,11 +1169,8 @@ export class AttachmentsService implements OnApplicationBootstrap {
     const shard = directories.at(-1)!;
     const contract = directories.at(-2)!;
     const root = directories[0]!;
-    const anchoredPath = join(`/proc/self/fd/${shard.fd}`, basename(path));
-    const quarantinePath = join(
-      `/proc/self/fd/${shard.fd}`,
-      this.cleanupQuarantineName(path, attachment.id),
-    );
+    const anchoredPath = shard.child(basename(path));
+    const quarantinePath = shard.child(this.cleanupQuarantineName(path, attachment.id));
     try {
       const quarantineInfo = await this.safePendingFileInfo(quarantinePath, '附件清理隔离路径非法');
       if (quarantineInfo) {
@@ -1225,12 +1218,8 @@ export class AttachmentsService implements OnApplicationBootstrap {
         }
         await this.removeStoragePath(quarantinePath);
       }
-      await rmdir(join(`/proc/self/fd/${contract.fd}`, basename(dirname(path)))).catch(
-        () => undefined,
-      );
-      await rmdir(join(`/proc/self/fd/${root.fd}`, basename(dirname(dirname(path))))).catch(
-        () => undefined,
-      );
+      await rmdir(contract.child(basename(dirname(path)))).catch(() => undefined);
+      await rmdir(root.child(basename(dirname(dirname(path))))).catch(() => undefined);
     } finally {
       await this.closeDirectoryHandles(directories);
     }

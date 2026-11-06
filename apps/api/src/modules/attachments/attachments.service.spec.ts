@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { mkdirSync, rmSync, symlinkSync } from 'node:fs';
 import {
   chown,
   chmod,
@@ -13,16 +14,83 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
+import { promisify } from 'node:util';
 import { basename, dirname, join } from 'node:path';
 import { deflateRawSync } from 'node:zlib';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { BadRequestException, ForbiddenException, Logger, NotFoundException } from '@nestjs/common';
 
 import { AttachmentsService } from './attachments.service';
+import { installWindowsAclAllowlist } from '../../testing/windows-acl-allowlist';
 
 const roots: string[] = [];
 const pdf = Buffer.from('%PDF-1.7\ncontent');
+
+// 本机受限令牌/CI 沙箱：临时目录的 ACL 含非运行账号主体（例如沙箱组与受限 SID）。
+// 这里只把"该临时目录上已存在的主体"SIDs 显式加入白名单，并且**仅限测试进程**。
+// 生产默认仍是严格白名单（空扩展名单），由 storage-platform.spec.ts 的纯函数用例固定。
+beforeAll(installWindowsAclAllowlist);
+
+const windowsStorage = process.platform === 'win32';
+
+/**
+ * 受限令牌（CI 沙箱 / 加固主机）可能禁止创建符号链接与联接点。
+ * 用同步探测在收集阶段判定，无法创建时**显式跳过**依赖符号链接的用例，
+ * 并在跳过原因里说明这些用例仍由 ubuntu-latest CI（生产基线）覆盖。
+ */
+function detectSymlinkSupport(): boolean {
+  const probeRoot = join(process.cwd(), 'node_modules', '.symlink-probe');
+  const target = join(probeRoot, 'target');
+  const link = join(probeRoot, 'link');
+  // 目录不可写属于环境故障，必须让测试红：不能把它伪装成"不支持符号链接"而跳过安全用例。
+  mkdirSync(target, { recursive: true });
+  try {
+    rmSync(link, { force: true, recursive: true });
+  } catch {
+    /* 首次运行没有残留 */
+  }
+  try {
+    symlinkSync(target, link, 'dir');
+    return true;
+  } catch (error) {
+    const code =
+      typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '';
+    // 只有明确的权限/不支持类错误才降级为"跳过"；其它错误继续抛。
+    if (!['EPERM', 'EACCES', 'UNKNOWN', 'EINVAL'].includes(code)) throw error;
+    return false;
+  } finally {
+    try {
+      rmSync(probeRoot, { recursive: true, force: true });
+    } catch {
+      /* 清理失败不影响判定 */
+    }
+  }
+}
+
+// 受限令牌/加固主机无法创建符号链接时，下列用例会被跳过（理由见上方注释），
+// 它们仍由 ubuntu-latest CI（生产基线）执行。
+const SYMLINK_SUPPORTED = detectSymlinkSupport();
+const runTool = promisify(execFile);
+
+/**
+ * 把一个目录/文件标记为"非私有"。
+ * POSIX 用 chmod 模式位；Windows 没有模式位，改为授予 Everyone 访问权，
+ * 由存储层 ACL 校验拒绝。
+ */
+async function openStorageWide(
+  target: string,
+  mode: number,
+  kind: 'dir' | 'file' = 'dir',
+): Promise<void> {
+  if (!windowsStorage) {
+    await chmod(target, mode);
+    return;
+  }
+  const icacls = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'icacls.exe');
+  await runTool(icacls, [target, '/grant', kind === 'dir' ? '*S-1-1-0:(OI)(CI)F' : '*S-1-1-0:(R)']);
+}
 
 type ZipEntry = {
   name: string;
@@ -1242,7 +1310,7 @@ describe('AttachmentsService CUSTOMER_CONTRACT', () => {
       const outside = await root();
       const sentinel = join(outside, 'sentinel.pdf');
       await writeFile(sentinel, pdf, { mode: 0o600 });
-      await chmod(await prepare(storageRoot), mode);
+      await openStorageWide(await prepare(storageRoot), mode);
       const storageKey = 'customer-contract/aa/00000000-0000-4000-8000-000000000000.pdf';
       const storedPath = join(storageRoot, storageKey);
       let storageDevice = 1n;
@@ -1300,21 +1368,79 @@ describe('AttachmentsService CUSTOMER_CONTRACT', () => {
     },
   );
 
-  it('fails closed when the storage root is not owned by the runtime user', async () => {
-    const storageRoot = await root();
-    const actualUid = process.getuid?.();
-    if (actualUid === undefined) throw new Error('owner regression requires a POSIX runtime');
-    vi.spyOn(process, 'getuid').mockReturnValue(actualUid + 1);
-    const prisma = { attachment: { findMany: vi.fn() } };
-    const service = new AttachmentsService(
-      prisma as never,
-      { assertCustomerManager: vi.fn() } as never,
-      storageRoot,
-    );
+  it.runIf(process.platform === 'win32')(
+    'reports a unified UNLINK_FAILED code when the source cannot be removed after linking',
+    async () => {
+      const storageRoot = await root();
+      const outside = await root();
+      const storageKey = 'customer-contract/aa/00000000-0000-4000-8000-000000000000.pdf';
+      const storedPath = join(storageRoot, storageKey);
+      await mkdir(dirname(storedPath), { recursive: true, mode: 0o700 });
+      await writeFile(storedPath, pdf, { mode: 0o600 });
+      const stored = await stat(storedPath);
+      const service = new AttachmentsService(
+        {
+          attachment: {
+            findMany: vi.fn().mockResolvedValue([
+              {
+                id: 'a1',
+                storageKey,
+                storageDevice: BigInt(stored.dev),
+                storageInode: BigInt(stored.ino),
+              },
+            ]),
+            updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+          },
+        } as never,
+        { assertCustomerManager: vi.fn() } as never,
+        storageRoot,
+      );
+      const unlinkFailure = Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' });
+      vi.spyOn(
+        service as unknown as { removeStoragePath: (p: string) => Promise<void> },
+        'removeStoragePath',
+      ).mockRejectedValue(unlinkFailure);
 
-    await expect(service.onApplicationBootstrap()).rejects.toBeInstanceOf(BadRequestException);
-    expect(prisma.attachment.findMany).not.toHaveBeenCalled();
-  });
+      await expect(service.reconcileStorageCleanup()).resolves.toEqual({ cleaned: 0, failed: 1 });
+      expect(await readFile(storedPath)).toEqual(pdf);
+      expect(outside).toBeTruthy();
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'rejects a real directory whose ACL grants Everyone (Windows owner equivalent)',
+    async () => {
+      const storageRoot = await root();
+      await openStorageWide(storageRoot, 0o777);
+      const prisma = { attachment: { findMany: vi.fn() } };
+      const service = new AttachmentsService(
+        prisma as never,
+        { assertCustomerManager: vi.fn() } as never,
+        storageRoot,
+      );
+
+      await expect(service.onApplicationBootstrap()).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.attachment.findMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it.skipIf(process.getuid === undefined)(
+    'fails closed when the storage root is not owned by the runtime user',
+    async () => {
+      const storageRoot = await root();
+      const actualUid = process.getuid!();
+      vi.spyOn(process, 'getuid').mockReturnValue(actualUid + 1);
+      const prisma = { attachment: { findMany: vi.fn() } };
+      const service = new AttachmentsService(
+        prisma as never,
+        { assertCustomerManager: vi.fn() } as never,
+        storageRoot,
+      );
+
+      await expect(service.onApplicationBootstrap()).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.attachment.findMany).not.toHaveBeenCalled();
+    },
+  );
 
   describe.runIf(process.getuid?.() === 0)('real foreign-owner directory and file checks', () => {
     it.each([
@@ -1499,7 +1625,7 @@ describe('AttachmentsService CUSTOMER_CONTRACT', () => {
       await mkdir(dirname(storedPath), { recursive: true, mode: 0o700 });
       await writeFile(storedPath, pdf, { mode: 0o600 });
       const stored = await stat(storedPath);
-      await chmod(dirname(storedPath), 0o770);
+      await openStorageWide(dirname(storedPath), 0o770);
       const updateMany = vi.fn().mockResolvedValue({ count: 1 });
       const attachment = {
         id: 'a1',
@@ -1535,84 +1661,90 @@ describe('AttachmentsService CUSTOMER_CONTRACT', () => {
     },
   );
 
-  it('rejects upload when the customer-contract directory is a symlink outside the root', async () => {
-    const storageRoot = await root();
-    const outside = await root();
-    await symlink(outside, join(storageRoot, 'customer-contract'), 'dir');
-    const prisma = {
-      attachment: {
-        create: vi.fn().mockResolvedValue({ id: 'pending-1' }),
-        deleteMany: vi.fn(),
-        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-      },
-    };
-    const service = new AttachmentsService(
-      prisma as never,
-      { assertCustomerManager: vi.fn().mockResolvedValue(undefined) } as never,
-      storageRoot,
-    );
-
-    await expect(
-      service.upload('u1', 'c1', {
-        originalname: 'contract.pdf',
-        mimetype: 'application/pdf',
-        size: pdf.length,
-        buffer: pdf,
-      }),
-    ).rejects.toBeInstanceOf(BadRequestException);
-    expect(await readdir(outside)).toEqual([]);
-    expect(prisma.attachment.create).toHaveBeenCalledOnce();
-    expect(prisma.attachment.deleteMany).not.toHaveBeenCalled();
-    expect(prisma.attachment.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ id: 'pending-1', status: 'PENDING' }),
-        data: expect.objectContaining({ storageCleanupAttempts: { increment: 1 } }),
-      }),
-    );
-  });
-
-  it('rejects upload when the shard directory is a symlink outside the root', async () => {
-    const storageRoot = await root();
-    const outside = await root();
-    await mkdir(join(storageRoot, 'customer-contract'));
-    for (let index = 0; index < 256; index += 1) {
-      await symlink(
-        outside,
-        join(storageRoot, 'customer-contract', index.toString(16).padStart(2, '0')),
-        'dir',
+  it.skipIf(!SYMLINK_SUPPORTED)(
+    'rejects upload when the customer-contract directory is a symlink outside the root',
+    async () => {
+      const storageRoot = await root();
+      const outside = await root();
+      await symlink(outside, join(storageRoot, 'customer-contract'), 'dir');
+      const prisma = {
+        attachment: {
+          create: vi.fn().mockResolvedValue({ id: 'pending-1' }),
+          deleteMany: vi.fn(),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
+      };
+      const service = new AttachmentsService(
+        prisma as never,
+        { assertCustomerManager: vi.fn().mockResolvedValue(undefined) } as never,
+        storageRoot,
       );
-    }
-    const prisma = {
-      attachment: {
-        create: vi.fn().mockResolvedValue({ id: 'pending-1' }),
-        deleteMany: vi.fn(),
-        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-      },
-    };
-    const service = new AttachmentsService(
-      prisma as never,
-      { assertCustomerManager: vi.fn().mockResolvedValue(undefined) } as never,
-      storageRoot,
-    );
 
-    await expect(
-      service.upload('u1', 'c1', {
-        originalname: 'contract.pdf',
-        mimetype: 'application/pdf',
-        size: pdf.length,
-        buffer: pdf,
-      }),
-    ).rejects.toBeInstanceOf(BadRequestException);
-    expect(await readdir(outside)).toEqual([]);
-    expect(prisma.attachment.create).toHaveBeenCalledOnce();
-    expect(prisma.attachment.deleteMany).not.toHaveBeenCalled();
-    expect(prisma.attachment.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ id: 'pending-1', status: 'PENDING' }),
-        data: expect.objectContaining({ storageCleanupAttempts: { increment: 1 } }),
-      }),
-    );
-  });
+      await expect(
+        service.upload('u1', 'c1', {
+          originalname: 'contract.pdf',
+          mimetype: 'application/pdf',
+          size: pdf.length,
+          buffer: pdf,
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(await readdir(outside)).toEqual([]);
+      expect(prisma.attachment.create).toHaveBeenCalledOnce();
+      expect(prisma.attachment.deleteMany).not.toHaveBeenCalled();
+      expect(prisma.attachment.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ id: 'pending-1', status: 'PENDING' }),
+          data: expect.objectContaining({ storageCleanupAttempts: { increment: 1 } }),
+        }),
+      );
+    },
+  );
+
+  it.skipIf(!SYMLINK_SUPPORTED)(
+    'rejects upload when the shard directory is a symlink outside the root',
+    async () => {
+      const storageRoot = await root();
+      const outside = await root();
+      await mkdir(join(storageRoot, 'customer-contract'));
+      for (let index = 0; index < 256; index += 1) {
+        await symlink(
+          outside,
+          join(storageRoot, 'customer-contract', index.toString(16).padStart(2, '0')),
+          'dir',
+        );
+      }
+      const prisma = {
+        attachment: {
+          create: vi.fn().mockResolvedValue({ id: 'pending-1' }),
+          deleteMany: vi.fn(),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
+      };
+      const service = new AttachmentsService(
+        prisma as never,
+        { assertCustomerManager: vi.fn().mockResolvedValue(undefined) } as never,
+        storageRoot,
+      );
+
+      await expect(
+        service.upload('u1', 'c1', {
+          originalname: 'contract.pdf',
+          mimetype: 'application/pdf',
+          size: pdf.length,
+          buffer: pdf,
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(await readdir(outside)).toEqual([]);
+      expect(prisma.attachment.create).toHaveBeenCalledOnce();
+      expect(prisma.attachment.deleteMany).not.toHaveBeenCalled();
+      expect(prisma.attachment.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ id: 'pending-1', status: 'PENDING' }),
+          data: expect.objectContaining({ storageCleanupAttempts: { increment: 1 } }),
+        }),
+      );
+    },
+  );
 
   it('preserves an existing final file when no-clobber publication detects a collision', async () => {
     const storageRoot = await root();
@@ -1660,53 +1792,56 @@ describe('AttachmentsService CUSTOMER_CONTRACT', () => {
     expect(prisma.attachment.updateMany).toHaveBeenCalledOnce();
   });
 
-  it('preserves an existing final symlink and its outside target when publication collides', async () => {
-    const storageRoot = await root();
-    const outside = await root();
-    const id = 'aa000000-0000-4000-8000-000000000000';
-    const finalDirectory = join(storageRoot, 'customer-contract/aa');
-    const finalPath = join(finalDirectory, `${id}.pdf`);
-    const outsideFile = join(outside, 'existing.pdf');
-    const previous = Buffer.from('%PDF-1.7\noutside attachment');
-    await mkdir(finalDirectory, { recursive: true, mode: 0o700 });
-    await writeFile(outsideFile, previous, { mode: 0o600 });
-    await symlink(outsideFile, finalPath, 'file');
-    const prisma = {
-      attachment: {
-        create: vi.fn().mockResolvedValue({ id: 'pending-1' }),
-        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
-        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-      },
-    };
-    const uuids = [id];
-    class CollisionAttachmentsService extends AttachmentsService {
-      protected override createStorageId(): string {
-        return uuids.shift()!;
+  it.skipIf(!SYMLINK_SUPPORTED)(
+    'preserves an existing final symlink and its outside target when publication collides',
+    async () => {
+      const storageRoot = await root();
+      const outside = await root();
+      const id = 'aa000000-0000-4000-8000-000000000000';
+      const finalDirectory = join(storageRoot, 'customer-contract/aa');
+      const finalPath = join(finalDirectory, `${id}.pdf`);
+      const outsideFile = join(outside, 'existing.pdf');
+      const previous = Buffer.from('%PDF-1.7\noutside attachment');
+      await mkdir(finalDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(outsideFile, previous, { mode: 0o600 });
+      await symlink(outsideFile, finalPath, 'file');
+      const prisma = {
+        attachment: {
+          create: vi.fn().mockResolvedValue({ id: 'pending-1' }),
+          deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
+      };
+      const uuids = [id];
+      class CollisionAttachmentsService extends AttachmentsService {
+        protected override createStorageId(): string {
+          return uuids.shift()!;
+        }
       }
-    }
-    const service = new CollisionAttachmentsService(
-      prisma as never,
-      { assertCustomerManager: vi.fn().mockResolvedValue(undefined) } as never,
-      storageRoot,
-    );
+      const service = new CollisionAttachmentsService(
+        prisma as never,
+        { assertCustomerManager: vi.fn().mockResolvedValue(undefined) } as never,
+        storageRoot,
+      );
 
-    await expect(
-      service.upload('u1', 'c1', {
-        originalname: 'contract.pdf',
-        mimetype: 'application/pdf',
-        size: pdf.length,
-        buffer: pdf,
-      }),
-    ).rejects.toMatchObject({ code: 'EEXIST' });
-    expect(await readlink(finalPath)).toBe(outsideFile);
-    expect(await readFile(outsideFile)).toEqual(previous);
-    expect(await readdir(finalDirectory)).toEqual([`${id}.pdf`]);
-    expect(prisma.attachment.create).toHaveBeenCalledOnce();
-    expect(prisma.attachment.deleteMany).toHaveBeenCalledWith({
-      where: { id: 'pending-1', status: 'PENDING' },
-    });
-    expect(prisma.attachment.updateMany).toHaveBeenCalledOnce();
-  });
+      await expect(
+        service.upload('u1', 'c1', {
+          originalname: 'contract.pdf',
+          mimetype: 'application/pdf',
+          size: pdf.length,
+          buffer: pdf,
+        }),
+      ).rejects.toMatchObject({ code: 'EEXIST' });
+      expect(await readlink(finalPath)).toBe(outsideFile);
+      expect(await readFile(outsideFile)).toEqual(previous);
+      expect(await readdir(finalDirectory)).toEqual([`${id}.pdf`]);
+      expect(prisma.attachment.create).toHaveBeenCalledOnce();
+      expect(prisma.attachment.deleteMany).toHaveBeenCalledWith({
+        where: { id: 'pending-1', status: 'PENDING' },
+      });
+      expect(prisma.attachment.updateMany).toHaveBeenCalledOnce();
+    },
+  );
 
   it('keeps a durable pending upload when temp cleanup repeatedly fails after publication', async () => {
     const storageRoot = await root();
@@ -2242,81 +2377,90 @@ describe('AttachmentsService CUSTOMER_CONTRACT', () => {
     );
   });
 
-  it('rejects startup reconciliation when ATTACHMENTS_ROOT itself is a symlink', async () => {
-    const actualRoot = await root();
-    const parent = await root();
-    const linkedRoot = join(parent, 'attachments-link');
-    await symlink(actualRoot, linkedRoot, 'dir');
-    const prisma = { attachment: { findMany: vi.fn() } };
-    const service = new AttachmentsService(
-      prisma as never,
-      { assertCustomerManager: vi.fn() } as never,
-      linkedRoot,
-    );
+  it.skipIf(!SYMLINK_SUPPORTED)(
+    'rejects startup reconciliation when ATTACHMENTS_ROOT itself is a symlink',
+    async () => {
+      const actualRoot = await root();
+      const parent = await root();
+      const linkedRoot = join(parent, 'attachments-link');
+      await symlink(actualRoot, linkedRoot, 'dir');
+      const prisma = { attachment: { findMany: vi.fn() } };
+      const service = new AttachmentsService(
+        prisma as never,
+        { assertCustomerManager: vi.fn() } as never,
+        linkedRoot,
+      );
 
-    await expect(service.onApplicationBootstrap()).rejects.toBeInstanceOf(BadRequestException);
-    expect(prisma.attachment.findMany).not.toHaveBeenCalled();
-  });
+      await expect(service.onApplicationBootstrap()).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.attachment.findMany).not.toHaveBeenCalled();
+    },
+  );
 
-  it('rejects download through a symlinked shard without reading outside the root', async () => {
-    const storageRoot = await root();
-    const outside = await root();
-    const storageKey = 'customer-contract/aa/00000000-0000-4000-8000-000000000000.pdf';
-    const outsideFile = join(outside, '00000000-0000-4000-8000-000000000000.pdf');
-    await mkdir(join(storageRoot, 'customer-contract'));
-    await writeFile(outsideFile, pdf);
-    await symlink(outside, join(storageRoot, 'customer-contract/aa'), 'dir');
-    const prisma = {
-      attachment: {
-        findFirst: vi.fn().mockResolvedValue({
-          id: 'a1',
-          storageKey,
-          originalName: 'x.pdf',
-          mimeType: 'application/pdf',
-          sizeBytes: pdf.length,
+  it.skipIf(!SYMLINK_SUPPORTED)(
+    'rejects download through a symlinked shard without reading outside the root',
+    async () => {
+      const storageRoot = await root();
+      const outside = await root();
+      const storageKey = 'customer-contract/aa/00000000-0000-4000-8000-000000000000.pdf';
+      const outsideFile = join(outside, '00000000-0000-4000-8000-000000000000.pdf');
+      await mkdir(join(storageRoot, 'customer-contract'));
+      await writeFile(outsideFile, pdf);
+      await symlink(outside, join(storageRoot, 'customer-contract/aa'), 'dir');
+      const prisma = {
+        attachment: {
+          findFirst: vi.fn().mockResolvedValue({
+            id: 'a1',
+            storageKey,
+            originalName: 'x.pdf',
+            mimeType: 'application/pdf',
+            sizeBytes: pdf.length,
+          }),
+        },
+      };
+      const service = new AttachmentsService(
+        prisma as never,
+        { assertCustomerManager: vi.fn().mockResolvedValue(undefined) } as never,
+        storageRoot,
+      );
+
+      await expect(service.download('u1', 'c1', 'a1')).rejects.toBeInstanceOf(BadRequestException);
+      expect(await readFile(outsideFile)).toEqual(pdf);
+    },
+  );
+
+  it.skipIf(!SYMLINK_SUPPORTED)(
+    'does not clean an outside file through a symlinked shard during reconciliation',
+    async () => {
+      const storageRoot = await root();
+      const outside = await root();
+      const storageKey = 'customer-contract/aa/00000000-0000-4000-8000-000000000000.pdf';
+      const outsideFile = join(outside, '00000000-0000-4000-8000-000000000000.pdf');
+      await mkdir(join(storageRoot, 'customer-contract'));
+      await writeFile(outsideFile, pdf);
+      await symlink(outside, join(storageRoot, 'customer-contract/aa'), 'dir');
+      const prisma = {
+        attachment: {
+          findMany: vi.fn().mockResolvedValue([{ id: 'a1', storageKey }]),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
+      };
+      const service = new AttachmentsService(
+        prisma as never,
+        { assertCustomerManager: vi.fn() } as never,
+        storageRoot,
+      );
+      vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+      await expect(service.reconcileStorageCleanup()).resolves.toEqual({ cleaned: 0, failed: 1 });
+      expect(await readFile(outsideFile)).toEqual(pdf);
+      expect(prisma.attachment.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ id: 'a1' }),
+          data: expect.objectContaining({ storageCleanupAttempts: { increment: 1 } }),
         }),
-      },
-    };
-    const service = new AttachmentsService(
-      prisma as never,
-      { assertCustomerManager: vi.fn().mockResolvedValue(undefined) } as never,
-      storageRoot,
-    );
-
-    await expect(service.download('u1', 'c1', 'a1')).rejects.toBeInstanceOf(BadRequestException);
-    expect(await readFile(outsideFile)).toEqual(pdf);
-  });
-
-  it('does not clean an outside file through a symlinked shard during reconciliation', async () => {
-    const storageRoot = await root();
-    const outside = await root();
-    const storageKey = 'customer-contract/aa/00000000-0000-4000-8000-000000000000.pdf';
-    const outsideFile = join(outside, '00000000-0000-4000-8000-000000000000.pdf');
-    await mkdir(join(storageRoot, 'customer-contract'));
-    await writeFile(outsideFile, pdf);
-    await symlink(outside, join(storageRoot, 'customer-contract/aa'), 'dir');
-    const prisma = {
-      attachment: {
-        findMany: vi.fn().mockResolvedValue([{ id: 'a1', storageKey }]),
-        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-      },
-    };
-    const service = new AttachmentsService(
-      prisma as never,
-      { assertCustomerManager: vi.fn() } as never,
-      storageRoot,
-    );
-    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-
-    await expect(service.reconcileStorageCleanup()).resolves.toEqual({ cleaned: 0, failed: 1 });
-    expect(await readFile(outsideFile)).toEqual(pdf);
-    expect(prisma.attachment.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ id: 'a1' }),
-        data: expect.objectContaining({ storageCleanupAttempts: { increment: 1 } }),
-      }),
-    );
-  });
+      );
+    },
+  );
 
   it('removes the published file when database persistence fails', async () => {
     const prisma = { attachment: { create: vi.fn().mockRejectedValue(new Error('db failed')) } };
@@ -2427,6 +2571,7 @@ describe('AttachmentsService CUSTOMER_CONTRACT', () => {
     const storedPath = join(storageRoot, storageKey);
     await mkdir(dirname(storedPath), { recursive: true, mode: 0o700 });
     await writeFile(storedPath, pdf, { mode: 0o640 });
+    await openStorageWide(storedPath, 0o640, 'file');
     const stored = await stat(storedPath);
     const prisma = {
       attachment: {
@@ -2462,6 +2607,7 @@ describe('AttachmentsService CUSTOMER_CONTRACT', () => {
       const pendingPath = entry === 'final' ? finalPath : tempPath;
       await mkdir(dirname(finalPath), { recursive: true, mode: 0o700 });
       await writeFile(pendingPath, pdf, { mode: 0o640 });
+      await openStorageWide(pendingPath, 0o640, 'file');
       const identity = await stat(pendingPath);
       const updateMany = vi.fn().mockResolvedValue({ count: 1 });
       const prisma = {
@@ -2513,6 +2659,7 @@ describe('AttachmentsService CUSTOMER_CONTRACT', () => {
     const quarantinePath = join(dirname(finalPath), quarantineName);
     await mkdir(dirname(finalPath), { recursive: true, mode: 0o700 });
     await writeFile(quarantinePath, pdf, { mode: 0o640 });
+    await openStorageWide(quarantinePath, 0o640, 'file');
     const identity = await stat(quarantinePath);
     const updateMany = vi.fn().mockResolvedValue({ count: 1 });
     const prisma = {
@@ -2652,6 +2799,8 @@ describe('AttachmentsService CUSTOMER_CONTRACT', () => {
     expect(result).not.toHaveProperty('storageKey');
     expect(result).not.toHaveProperty('resourceId');
     expect(result).toMatchObject({ id: 'a1', originalName: 'x.pdf', sizeBytes: pdf.length });
+    // 显式释放流句柄：Node 不再允许 GC 关闭 FileHandle。
+    result.stream.destroy();
   });
 
   it('never deletes an archived final whose persisted identity does not match', async () => {

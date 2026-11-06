@@ -7,7 +7,7 @@
     "dev": "next dev --hostname 127.0.0.1 --port ${WEB_PORT:-3000}",
     "lint": "eslint .",
     "start": "next start --hostname ${HOSTNAME:-127.0.0.1} --port ${WEB_PORT:-3000}",
-    "test": "vitest run",
+    "test": "node ../../infra/scripts/run-with-local-tmp.mjs vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -20,14 +20,14 @@
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "lucide-react": "1.33.0",
-    "next": "16.3.1",
+    "next": "16.4.1",
     "qrcode.react": "4.2.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-hook-form": "7.85.0",
     "tailwind-merge": "3.6.0",
     "tailwindcss": "4.3.3",
-    "zod": "4.4.3"
+    "zod": "4.6.6"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "7.0.1",
@@ -38,9 +38,9 @@
     "@types/react-dom": "19.2.4",
     "@vitejs/plugin-react": "6.0.5",
     "eslint": "9.39.5",
-    "eslint-config-next": "16.3.1",
+    "eslint-config-next": "16.4.1",
     "jsdom": "30.0.1",
     "typescript": "5.9.3",
-    "vitest": "4.1.10"
+    "vitest": "4.1.12"
   }
 }
