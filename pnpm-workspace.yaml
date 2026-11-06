@@ -3,7 +3,12 @@ packages:
   - packages/*
 
 allowBuilds:
+  # embedded-postgres 的平台二进制包（Windows 本机 db:local / Linux CI 解析）都需要执行 postinstall。
   '@embedded-postgres/windows-x64': true
+  '@embedded-postgres/linux-x64': true
+  '@embedded-postgres/linux-arm64': true
+  '@embedded-postgres/darwin-x64': true
+  '@embedded-postgres/darwin-arm64': true
   '@prisma/engines': true
   esbuild: true
   prisma: true
