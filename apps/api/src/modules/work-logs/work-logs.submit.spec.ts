@@ -20,6 +20,7 @@ function createPrismaMock(log: Record<string, unknown> | null = null) {
     projectMembership: { findFirst: vi.fn().mockResolvedValue({ id: 'membership-1' }) },
     workLogVersion: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     attachment: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    projectEvent: { create: vi.fn().mockResolvedValue({ id: 'event-1' }) },
   };
   const prisma = {
     workLog: { findFirst: vi.fn().mockResolvedValue(log) },
@@ -130,6 +131,8 @@ describe('WorkLogsService submit', () => {
         service.submit('author-1', 'wl-1', { approverId: 'approver-1' }),
       ).rejects.toBeInstanceOf(ConflictException);
       expect(prisma.$transaction).not.toHaveBeenCalled();
+      // 被拒的提交不得留下任何事件。
+      expect(prisma.tx.projectEvent.create).not.toHaveBeenCalled();
     },
   );
 

@@ -26,6 +26,7 @@ function createPrismaMock(log: Record<string, unknown> | null) {
       findFirstOrThrow: vi.fn().mockResolvedValue({ id: 'wl-1', version: 6 }),
     },
     projectMembership: { findFirst: vi.fn().mockResolvedValue({ id: 'membership-1' }) },
+    projectEvent: { create: vi.fn().mockResolvedValue({ id: 'event-1' }) },
     order: { findFirst: vi.fn().mockResolvedValue({ id: 'order-1' }) },
     orderItem: { findFirst: vi.fn().mockResolvedValue({ id: 'item-1' }) },
   };

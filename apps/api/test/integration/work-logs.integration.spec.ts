@@ -847,3 +847,89 @@ describe('WorkLogsService visibility (real PostgreSQL)', () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 });
+
+describe('work log project events (real PostgreSQL)', () => {
+  it('records lifecycle events without leaking completion text', async () => {
+    const authorId = await createUser('author');
+    const approverId = await createUser('approver');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    await addMember(approverId, projectId, ['APPROVER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+    await service.submit(authorId, created.id, { approverId });
+
+    const events = await prisma.projectEvent.findMany({
+      where: { projectId },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    expect(events.map((e) => e.eventType)).toEqual(['WORK_LOG_CREATED', 'WORK_LOG_SUBMITTED']);
+    for (const event of events) {
+      expect(event.actorId).toBe(authorId);
+      // 摘要不得包含正文/工时等私有内容。
+      expect(event.summary).not.toContain(draft.completion);
+      expect(event.summary).not.toContain(String(draft.hours));
+    }
+  });
+
+  it('writes the creation event and the log atomically', async () => {
+    const authorId = await createUser('author');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+
+    // 让事件写入失败：日志必须一起回滚，不能留下"有日志无事件"的半成品。
+    await prisma.$executeRawUnsafe(
+      'ALTER TABLE "project_events" ADD CONSTRAINT "project_events_probe_check" CHECK ("event_type" <> \'WORK_LOG_CREATED\')',
+    );
+    try {
+      await expect(service.createDraft(authorId, { ...draft, projectId })).rejects.toBeTruthy();
+      expect(await prisma.workLog.count({ where: { projectId } })).toBe(0);
+      expect(await prisma.projectEvent.count({ where: { projectId } })).toBe(0);
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "project_events" DROP CONSTRAINT IF EXISTS "project_events_probe_check"',
+      );
+    }
+  });
+
+  it('writes no event when the submission is rejected', async () => {
+    const authorId = await createUser('author');
+    const approverId = await createUser('approver');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    await addMember(approverId, projectId, ['APPROVER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+    await service.submit(authorId, created.id, { approverId });
+    const before = await prisma.projectEvent.count({ where: { projectId } });
+
+    await expect(service.submit(authorId, created.id, { approverId })).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+
+    expect(await prisma.projectEvent.count({ where: { projectId } })).toBe(before);
+  });
+
+  it('rolls back the submission when the event cannot be written', async () => {
+    const authorId = await createUser('author');
+    const approverId = await createUser('approver');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    await addMember(approverId, projectId, ['APPROVER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+
+    await prisma.$executeRawUnsafe(
+      'ALTER TABLE "project_events" ADD CONSTRAINT "project_events_probe_submitted" CHECK ("event_type" <> \'WORK_LOG_SUBMITTED\')',
+    );
+    try {
+      await expect(service.submit(authorId, created.id, { approverId })).rejects.toBeTruthy();
+      const log = await prisma.workLog.findUniqueOrThrow({ where: { id: created.id } });
+      expect(log.status).toBe('DRAFT');
+      expect(await prisma.approvalRequest.count()).toBe(0);
+      const events = await prisma.projectEvent.findMany({ where: { projectId } });
+      expect(events.map((e) => e.eventType)).toEqual(['WORK_LOG_CREATED']);
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'ALTER TABLE "project_events" DROP CONSTRAINT IF EXISTS "project_events_probe_submitted"',
+      );
+    }
+  });
+});

@@ -24,7 +24,13 @@ function createPrismaMock() {
     visibility: 'PRIVATE',
     version: 3,
   };
+  const tx = {
+    workLog: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    projectEvent: { create: vi.fn().mockResolvedValue({ id: 'event-1' }) },
+  };
   const prisma = {
+    $transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx)),
+    tx,
     workLog: {
       findFirst: vi.fn().mockResolvedValue(log),
       findMany: vi.fn().mockResolvedValue([
@@ -69,7 +75,7 @@ describe('WorkLogsService.setVisibility', () => {
 
     await service.setVisibility('pm-1', 'wl-1', { visibility: 'PROJECT_VISIBLE', version: 3 });
 
-    expect(prisma.workLog.updateMany).toHaveBeenCalledWith({
+    expect(prisma.tx.workLog.updateMany).toHaveBeenCalledWith({
       where: {
         id: 'wl-1',
         projectId: 'project-1',
@@ -89,7 +95,7 @@ describe('WorkLogsService.setVisibility', () => {
 
     await service.setVisibility('mgr-1', 'wl-1', { visibility: 'PRIVATE', version: 3 });
 
-    expect(prisma.workLog.updateMany).toHaveBeenCalledOnce();
+    expect(prisma.tx.workLog.updateMany).toHaveBeenCalledOnce();
   });
 
   it('requires project membership even for a worklog:manage holder', async () => {
@@ -107,7 +113,7 @@ describe('WorkLogsService.setVisibility', () => {
     await expect(
       service.setVisibility('outsider-1', 'wl-1', { visibility: 'PROJECT_VISIBLE', version: 3 }),
     ).rejects.toBeInstanceOf(NotFoundException);
-    expect(prisma.workLog.updateMany).not.toHaveBeenCalled();
+    expect(prisma.tx.workLog.updateMany).not.toHaveBeenCalled();
   });
 
   it('rejects a plain member who has neither the role nor the capability', async () => {
@@ -117,11 +123,11 @@ describe('WorkLogsService.setVisibility', () => {
     await expect(
       service.setVisibility('member-1', 'wl-1', { visibility: 'PROJECT_VISIBLE', version: 3 }),
     ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(prisma.workLog.updateMany).not.toHaveBeenCalled();
+    expect(prisma.tx.workLog.updateMany).not.toHaveBeenCalled();
   });
 
   it('returns 409 when the caller version is stale', async () => {
-    prisma.workLog.updateMany.mockResolvedValue({ count: 0 });
+    prisma.tx.workLog.updateMany.mockResolvedValue({ count: 0 });
     const { service } = createService(prisma);
 
     await expect(
@@ -138,7 +144,7 @@ describe('WorkLogsService.setVisibility', () => {
     await expect(
       service.setVisibility('pm-1', 'wl-1', { visibility: 'PRIVATE', version: 0 } as never),
     ).rejects.toBeInstanceOf(BadRequestException);
-    expect(prisma.workLog.updateMany).not.toHaveBeenCalled();
+    expect(prisma.tx.workLog.updateMany).not.toHaveBeenCalled();
   });
 });
 

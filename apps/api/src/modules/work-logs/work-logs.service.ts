@@ -8,6 +8,7 @@ import {
 import { randomBytes } from 'node:crypto';
 
 import { PrismaService } from '../../database/prisma.service';
+import type { Prisma } from '../../generated/prisma/client';
 import { PERMISSIONS } from '../authorization/permission.constants';
 import { ProjectAccessService } from '../project-access/project-access.service';
 import { RolesService } from '../roles/roles.service';
@@ -245,6 +246,12 @@ export class WorkLogsService {
             where: { id: workLog.id },
             data: { currentVersionId: version.id },
           });
+          await this.recordEvent(tx, {
+            projectId: draft.projectId,
+            actorId: userId,
+            eventType: 'WORK_LOG_CREATED',
+            summary: `工作日志 ${workLog.number} 已创建（DRAFT）`,
+          });
           // 返回 workLog.version 作为乐观并发令牌：后续 PATCH 必须带它。
           return {
             id: workLog.id,
@@ -324,6 +331,13 @@ export class WorkLogsService {
             },
           });
           if (updated.count !== 1) throw new ConflictException('工作日志状态已变化，请刷新后重试');
+
+          await this.recordEvent(tx, {
+            projectId: log.projectId,
+            actorId: userId,
+            eventType: 'WORK_LOG_VERSION_CREATED',
+            summary: `工作日志 ${log.number} 新增版本 v${version.versionNumber}（DRAFT）`,
+          });
 
           return {
             id: log.id,
@@ -452,18 +466,31 @@ export class WorkLogsService {
     const id = requireString(workLogId, 'workLogId');
     const log = await this.prisma.workLog.findFirst({
       where: { id, deletedAt: null },
-      select: { id: true, projectId: true },
+      select: { id: true, number: true, projectId: true },
     });
     if (!log) throw new NotFoundException('工作日志不存在');
 
     await this.assertVisibilityManager(userId, log.projectId);
 
-    const updated = await this.prisma.workLog.updateMany({
-      where: { id: log.id, projectId: log.projectId, deletedAt: null, version },
-      data: { visibility: visibility as 'PRIVATE' | 'PROJECT_VISIBLE', version: { increment: 1 } },
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.workLog.updateMany({
+        where: { id: log.id, projectId: log.projectId, deletedAt: null, version },
+        data: {
+          visibility: visibility as 'PRIVATE' | 'PROJECT_VISIBLE',
+          version: { increment: 1 },
+        },
+      });
+      if (updated.count !== 1) throw new ConflictException('工作日志已被修改，请刷新后重试');
+
+      await this.recordEvent(tx, {
+        projectId: log.projectId,
+        actorId: userId,
+        eventType: 'WORK_LOG_VISIBILITY_CHANGED',
+        summary: `工作日志 ${log.number} 可见性变更为 ${visibility}`,
+      });
+
+      return { id: log.id, visibility, version: version + 1 };
     });
-    if (updated.count !== 1) throw new ConflictException('工作日志已被修改，请刷新后重试');
-    return { id: log.id, visibility, version: version + 1 };
   }
 
   /**
@@ -510,6 +537,21 @@ export class WorkLogsService {
     }
   }
 
+  /** 事件摘要只允许 ID/编号/状态/版本号，禁止携带正文、工时、审批意见等私有内容。 */
+  private recordEvent(
+    tx: Pick<Prisma.TransactionClient, 'projectEvent'>,
+    event: { projectId: string; actorId: string; eventType: string; summary: string },
+  ) {
+    return tx.projectEvent.create({
+      data: {
+        projectId: event.projectId,
+        eventType: event.eventType,
+        summary: event.summary,
+        actorId: event.actorId,
+      },
+    });
+  }
+
   private isConcurrencyError(error: unknown): boolean {
     const code =
       typeof error === 'object' && error !== null && 'code' in error
@@ -523,7 +565,7 @@ export class WorkLogsService {
     const id = requireString(workLogId, 'workLogId');
     const log = await this.prisma.workLog.findFirst({
       where: { id, authorId: userId, deletedAt: null },
-      select: { id: true, status: true, projectId: true, currentVersionId: true },
+      select: { id: true, number: true, status: true, projectId: true, currentVersionId: true },
     });
     // 他人的日志与不存在的日志同一响应，避免探测存在性。
     if (!log) throw new NotFoundException('工作日志不存在');
@@ -592,7 +634,7 @@ export class WorkLogsService {
     const workLogIdValue = requireString(workLogId, 'workLogId');
     const log = await this.prisma.workLog.findFirst({
       where: { id: workLogIdValue, authorId: userId, deletedAt: null },
-      select: { id: true, status: true, projectId: true, currentVersionId: true },
+      select: { id: true, number: true, status: true, projectId: true, currentVersionId: true },
     });
     if (!log) throw new NotFoundException('工作日志不存在');
     if (log.status !== 'DRAFT') throw new ConflictException(SUBMIT_BLOCKED_MESSAGE);
@@ -651,6 +693,13 @@ export class WorkLogsService {
           resourceType: 'WORK_LOG',
         },
         data: { resourceType: 'WORK_LOG_VERSION', resourceId: log.currentVersionId! },
+      });
+
+      await this.recordEvent(tx, {
+        projectId: log.projectId,
+        actorId: userId,
+        eventType: 'WORK_LOG_SUBMITTED',
+        summary: `工作日志 ${log.number} 已提交审批`,
       });
 
       const request = await tx.approvalRequest.create({

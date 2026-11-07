@@ -22,13 +22,12 @@ function createPrismaMock() {
     workLogVersion: {
       create: vi.fn().mockResolvedValue({ id: 'wlv-1', versionNumber: 1 }),
     },
+    projectEvent: { create: vi.fn().mockResolvedValue({ id: 'event-1' }) },
     order: { findFirst: vi.fn().mockResolvedValue({ id: 'order-1' }) },
     orderItem: { findFirst: vi.fn().mockResolvedValue({ id: 'item-1' }) },
   };
   const prisma = {
     $transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx)),
-    workLog: { create: vi.fn(), update: vi.fn(), findFirst: vi.fn() },
-    workLogVersion: { create: vi.fn() },
     tx,
   };
   return prisma;
