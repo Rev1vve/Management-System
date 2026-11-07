@@ -23,7 +23,13 @@ function createPrismaMock(log: Record<string, unknown> | null = null) {
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       aggregate: vi.fn().mockResolvedValue({ _max: { versionNumber: 1 } }),
     },
-    projectMembership: { findFirst: vi.fn().mockResolvedValue({ id: 'membership-1' }) },
+    projectMembership: {
+      findFirst: vi
+        .fn()
+        .mockResolvedValueOnce({ id: 'membership-approver' })
+        .mockResolvedValueOnce({ roles: [{ role: 'APPROVER' }] })
+        .mockResolvedValueOnce({ id: 'membership-author' }),
+    },
     order: { findFirst: vi.fn().mockResolvedValue({ id: 'order-1' }) },
     orderItem: { findFirst: vi.fn().mockResolvedValue({ id: 'item-1' }) },
     attachment: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },

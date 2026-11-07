@@ -17,14 +17,28 @@ function createPrismaMock(log: Record<string, unknown> | null = null) {
   const tx = {
     workLog: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     approvalRequest: { create: vi.fn().mockResolvedValue({ id: 'approval-1' }) },
-    projectMembership: { findFirst: vi.fn().mockResolvedValue({ id: 'membership-1' }) },
+    projectMembership: {
+      findFirst: vi
+        .fn()
+        // approver membership, then approver roles, then author membership
+        .mockResolvedValueOnce({ id: 'membership-approver' })
+        .mockResolvedValueOnce({ roles: [{ role: 'APPROVER' }] })
+        .mockResolvedValueOnce({ id: 'membership-author' }),
+    },
     workLogVersion: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     attachment: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
     projectEvent: { create: vi.fn().mockResolvedValue({ id: 'event-1' }) },
   };
   const prisma = {
     workLog: { findFirst: vi.fn().mockResolvedValue(log) },
-    projectMembership: { findFirst: vi.fn().mockResolvedValue({ id: 'membership-1' }) },
+    projectMembership: {
+      findFirst: vi
+        .fn()
+        // approver membership, then approver roles, then author membership
+        .mockResolvedValueOnce({ id: 'membership-approver' })
+        .mockResolvedValueOnce({ roles: [{ role: 'APPROVER' }] })
+        .mockResolvedValueOnce({ id: 'membership-author' }),
+    },
     $transaction: vi.fn(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx)),
     tx,
   };
@@ -111,6 +125,20 @@ describe('WorkLogsService submit', () => {
     });
   });
 
+  it('rejects an approver without the approver role or decision capability', async () => {
+    prisma = createPrismaMock({ ...draftLog });
+    prisma.tx.projectMembership.findFirst.mockReset();
+    prisma.tx.projectMembership.findFirst
+      .mockResolvedValueOnce({ id: 'membership-approver' })
+      .mockResolvedValueOnce({ roles: [{ role: 'MEMBER' }] });
+    const service = createService(prisma);
+
+    await expect(
+      service.submit('author-1', 'wl-1', { approverId: 'plain-member' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.tx.approvalRequest.create).not.toHaveBeenCalled();
+  });
+
   it('rejects a non-author with 404 and writes nothing', async () => {
     prisma = createPrismaMock(null);
     const service = createService(prisma);
@@ -148,8 +176,10 @@ describe('WorkLogsService submit', () => {
   it('returns 404 when the author is no longer an active project member', async () => {
     prisma = createPrismaMock({ ...draftLog });
     // 第一次查询是审批人资格（通过），第二次是作者资格（返回 null）。
+    prisma.tx.projectMembership.findFirst.mockReset();
     prisma.tx.projectMembership.findFirst
       .mockResolvedValueOnce({ id: 'membership-approver' })
+      .mockResolvedValueOnce({ roles: [{ role: 'APPROVER' }] })
       .mockResolvedValueOnce(null);
     const service = createService(prisma);
 

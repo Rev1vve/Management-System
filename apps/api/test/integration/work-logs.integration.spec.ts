@@ -933,3 +933,74 @@ describe('work log project events (real PostgreSQL)', () => {
     }
   });
 });
+
+describe('WorkLogsService.listMine (real PostgreSQL)', () => {
+  it('returns only the caller logs with paging totals', async () => {
+    const authorId = await createUser('author');
+    const otherId = await createUser('other');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    await addMember(otherId, projectId, ['MEMBER']);
+    await service.createDraft(authorId, { ...draft, projectId });
+    await service.createDraft(authorId, { ...draft, projectId });
+    await service.createDraft(otherId, { ...draft, projectId });
+
+    const page = await service.listMine(authorId, { page: 1, pageSize: 10 });
+
+    expect(page.total).toBe(2);
+    expect(page.items).toHaveLength(2);
+    expect(Object.keys(page.items[0]!).sort()).toEqual(
+      ['currentVersion', 'id', 'number', 'project', 'status', 'version', 'visibility'].sort(),
+    );
+  });
+});
+
+describe('approver eligibility (real PostgreSQL)', () => {
+  it('rejects an approver who is a plain member without the approver role', async () => {
+    const authorId = await createUser('author');
+    const plainId = await createUser('plain');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    await addMember(plainId, projectId, ['MEMBER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+
+    await expect(
+      service.submit(authorId, created.id, { approverId: plainId }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(await prisma.approvalRequest.count()).toBe(0);
+    const log = await prisma.workLog.findUniqueOrThrow({ where: { id: created.id } });
+    expect(log.status).toBe('DRAFT');
+  });
+
+  it('accepts an approver holding approval:decide without the project approver role', async () => {
+    const authorId = await createUser('author');
+    const capabilityId = await createUser('capability-approver');
+    const projectId = await createProject();
+    await addMember(authorId, projectId, ['MEMBER']);
+    await addMember(capabilityId, projectId, ['MEMBER']);
+    const created = await service.createDraft(authorId, { ...draft, projectId });
+
+    const permission = await prisma.permission.upsert({
+      where: { key: 'approval:decide' },
+      update: {},
+      create: { key: 'approval:decide', description: '审批决策' },
+    });
+    const roleKey = `APPROVAL_CAP_${randomUUID().slice(0, 8)}`;
+    const role = await prisma.systemRole.create({ data: { key: roleKey, name: '临时审批能力' } });
+    try {
+      await prisma.rolePermission.create({
+        data: { systemRoleId: role.id, permissionId: permission.id },
+      });
+      await prisma.userSystemRole.create({
+        data: { userId: capabilityId, systemRoleId: role.id },
+      });
+
+      const result = await service.submit(authorId, created.id, { approverId: capabilityId });
+      expect(result.status).toBe('SUBMITTED');
+    } finally {
+      await prisma.userSystemRole.deleteMany({ where: { systemRoleId: role.id } });
+      await prisma.rolePermission.deleteMany({ where: { systemRoleId: role.id } });
+      await prisma.systemRole.delete({ where: { id: role.id } }).catch(() => undefined);
+    }
+  });
+});

@@ -177,6 +177,23 @@ describe('WorkLogsService.listVisibilityMetadata', () => {
     });
   });
 
+  it('lists only the caller logs with a stable order and server-side paging', async () => {
+    const prisma = createPrismaMock();
+    prisma.workLog.findMany = vi.fn().mockResolvedValue([]);
+    const { service } = createService(prisma);
+
+    await service.listMine('author-1', { page: 2, pageSize: 5 });
+
+    expect(prisma.workLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { authorId: 'author-1', deletedAt: null },
+        orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+        skip: 5,
+        take: 5,
+      }),
+    );
+  });
+
   it('rejects callers without visibility rights', async () => {
     const prisma = createPrismaMock();
     const { service } = createService(prisma, { roles: ['MEMBER'], permissions: [] });

@@ -78,6 +78,9 @@ describe('task 8 work-log HTTP surface', () => {
         '/api/v1/projects/project-1/work-logs/visibility',
       );
       expect(metadata.status).toBe(401);
+
+      const myLogs = await request(app.getHttpServer()).get('/api/v1/my/work-logs');
+      expect(myLogs.status).toBe(401);
     } finally {
       await app.close();
     }

@@ -92,6 +92,63 @@ export interface PortfolioSummary {
   updatedAt: string;
   canManage?: boolean;
 }
+
+export type WorkLogStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'RETURNED' | 'REJECTED';
+export type WorkLogVisibility = 'PRIVATE' | 'PROJECT_VISIBLE';
+
+export interface WorkLogVersionSummary {
+  id: string;
+  versionNumber: number;
+  workDate: string;
+  hours: string | number;
+  completion: string;
+  progressNote?: string | null;
+  submittedAt: string;
+}
+
+export interface WorkLogListItem {
+  id: string;
+  number: string;
+  status: WorkLogStatus;
+  visibility: WorkLogVisibility;
+  version: number;
+  project: { id: string; number: string; name: string } | null;
+  currentVersion: {
+    versionNumber: number;
+    workDate: string;
+    hours: string | number;
+    submittedAt: string;
+  } | null;
+}
+
+export interface WorkLogDetail {
+  id: string;
+  number: string;
+  status: WorkLogStatus;
+  visibility: WorkLogVisibility;
+  version: number;
+  projectId: string;
+  currentVersion: WorkLogVersionSummary | null;
+  versions: Array<{ id: string; versionNumber: number; submittedAt: string }>;
+}
+
+export interface WorkLogCreate {
+  projectId: string;
+  workDate: string;
+  hours: number;
+  completion: string;
+  progressNote?: string | null;
+  visibility?: WorkLogVisibility;
+}
+
+export interface WorkLogAttachment {
+  id: string;
+  originalName: string;
+  mimeType: string;
+  sizeBytes: number;
+  createdAt: string;
+}
+
 export interface ProjectSummary {
   id: string;
   number: string;
@@ -397,6 +454,69 @@ export const api = {
     request<{ ok: boolean; account: string }>('/mfa/recovery-login', json('POST', body)),
   mfaRecoveryRotate: (body: { password: string; code: string }) =>
     request<{ ok: boolean; recoveryCodes: string[] }>('/mfa/recovery-rotate', json('POST', body)),
+
+  listMyWorkLogs: (q: { page: number; pageSize: number }) =>
+    request<PaginatedResponse<WorkLogListItem>>(
+      `/my/work-logs?page=${encodeURIComponent(String(q.page))}&pageSize=${encodeURIComponent(String(q.pageSize))}`,
+    ),
+  getWorkLog: (workLogId: string) => request<WorkLogDetail>(`/work-logs/${id(workLogId)}`),
+  createWorkLog: (body: WorkLogCreate) =>
+    request<{ id: string; number: string; versionNumber: number; version: number }>(
+      '/projects/' + encodeURIComponent(body.projectId) + '/work-logs',
+      json('POST', body),
+    ),
+  updateWorkLogDraft: (
+    workLogId: string,
+    body: {
+      version: number;
+      workDate: string;
+      hours: number;
+      completion: string;
+      progressNote?: string | null;
+    },
+  ) =>
+    request<{ id: string; status: WorkLogStatus; version: number }>(
+      `/work-logs/${id(workLogId)}`,
+      json('PATCH', body),
+    ),
+  submitWorkLog: (workLogId: string, body: { approverId: string }) =>
+    request<{ id: string; status: WorkLogStatus; approvalRequestId: string }>(
+      `/work-logs/${id(workLogId)}/submit`,
+      json('POST', body),
+    ),
+  addWorkLogVersion: (
+    workLogId: string,
+    body: { workDate: string; hours: number; completion: string; progressNote?: string | null },
+  ) =>
+    request<{ id: string; status: WorkLogStatus; versionNumber: number; version: number }>(
+      `/work-logs/${id(workLogId)}/versions`,
+      json('POST', body),
+    ),
+  setWorkLogVisibility: (
+    workLogId: string,
+    body: { visibility: WorkLogVisibility; version: number },
+  ) =>
+    request<{ id: string; visibility: WorkLogVisibility; version: number }>(
+      `/work-logs/${id(workLogId)}/visibility`,
+      json('PATCH', body),
+    ),
+  listWorkLogAttachments: (workLogId: string) =>
+    request<WorkLogAttachment[]>(`/work-logs/${id(workLogId)}/attachments`),
+  uploadWorkLogAttachment: (workLogId: string, file: File) => {
+    const body = new FormData();
+    body.append('file', file);
+    return request<WorkLogAttachment>(`/work-logs/${id(workLogId)}/attachments`, {
+      method: 'POST',
+      body,
+    });
+  },
+  archiveWorkLogAttachment: (workLogId: string, attachmentId: string) =>
+    request<{ ok: boolean }>(
+      `/work-logs/${id(workLogId)}/attachments/${id(attachmentId)}/archive`,
+      json('POST', {}),
+    ),
+  workLogAttachmentDownloadUrl: (workLogId: string, attachmentId: string) =>
+    `/api/v1/work-logs/${id(workLogId)}/attachments/${id(attachmentId)}/download`,
   listSessions: () =>
     request<
       Array<{

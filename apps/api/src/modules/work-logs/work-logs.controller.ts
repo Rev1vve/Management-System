@@ -76,6 +76,15 @@ export class WorkLogsController {
     return this.workLogs.getDetail(request.user.id, id);
   }
 
+  /** 本人日志列表（作者作用域）。 */
+  @Get('my/work-logs')
+  listMine(@Req() request: Authenticated, @Query() query: Record<string, unknown>) {
+    return this.workLogs.listMine(request.user.id, {
+      page: Number(query.page ?? 1),
+      pageSize: Number(query.pageSize ?? 20),
+    });
+  }
+
   /** 设置可见性（D-A：项目经理 或 worklog:manage）。 */
   @Patch('work-logs/:id/visibility')
   setVisibility(

@@ -449,6 +449,41 @@ export class WorkLogsService {
   }
 
   /**
+   * 本人日志列表（Web `/worklogs` 用）：仅作者本人可见，服务端分页。
+   * 只返回列表所需字段，不返回正文历史之外的内容。
+   */
+  async listMine(userId: string, query: { page?: number; pageSize?: number }) {
+    const rawPage = Number(query?.page ?? 1);
+    const page = Number.isSafeInteger(rawPage) && rawPage >= 1 ? rawPage : 1;
+    const rawPageSize = Number(query?.pageSize ?? 20);
+    const pageSize =
+      Number.isSafeInteger(rawPageSize) && rawPageSize >= 1 ? Math.min(100, rawPageSize) : 20;
+
+    const where = { authorId: userId, deletedAt: null } as const;
+    const [items, total] = await Promise.all([
+      this.prisma.workLog.findMany({
+        where,
+        select: {
+          id: true,
+          number: true,
+          status: true,
+          visibility: true,
+          version: true,
+          project: { select: { id: true, number: true, name: true } },
+          currentVersion: {
+            select: { versionNumber: true, workDate: true, hours: true, submittedAt: true },
+          },
+        },
+        orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+      }),
+      this.prisma.workLog.count({ where }),
+    ]);
+    return { items, page, pageSize, total };
+  }
+
+  /**
    * 设置可见性（D-A）：仅项目作用域内的 PROJECT_MANAGER 或持 worklog:manage 者（OR）。
    * 用 version 做乐观并发，避免与草稿编辑/提交互相覆盖。
    */
@@ -653,6 +688,22 @@ export class WorkLogsService {
         select: { id: true },
       });
       if (!approverMembership) throw new NotFoundException('审批人不存在或不是项目当前成员');
+
+      // 审批资格：项目内 APPROVER 角色，或持有 approval:decide 能力。
+      // 之前只校验"是成员"，任意普通成员都能被指定为审批人。
+      const approverRoles = await tx.projectMembership.findFirst({
+        where: { id: approverMembership.id },
+        select: { roles: { select: { role: true } } },
+      });
+      const hasApproverRole = (approverRoles?.roles ?? []).some(
+        (entry) => entry.role === 'APPROVER',
+      );
+      if (!hasApproverRole) {
+        const permissions = await this.roles.listUserPermissions(approverId);
+        if (!permissions.includes(PERMISSIONS.APPROVAL_DECIDE)) {
+          throw new BadRequestException('审批人必须持有审批人角色或审批决策能力');
+        }
+      }
 
       // 作者必须在提交时仍是该项目有效成员：被移出项目后不得继续提交草稿。
       const authorMembership = await tx.projectMembership.findFirst({
