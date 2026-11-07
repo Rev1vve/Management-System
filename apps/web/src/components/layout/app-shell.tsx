@@ -176,8 +176,10 @@ export function AppShell({ children, roles = ['EMPLOYEE'], user }: AppShellProps
           <Button type="button" variant="ghost" size="icon" aria-label="搜索" disabled>
             <Search aria-hidden="true" className="h-5 w-5" />
           </Button>
-          <Button type="button" variant="ghost" size="icon" aria-label="通知" disabled>
-            <Bell aria-hidden="true" className="h-5 w-5" />
+          <Button asChild variant="ghost" size="icon">
+            <Link href="/notifications" aria-label="通知中心">
+              <Bell aria-hidden="true" className="h-5 w-5" />
+            </Link>
           </Button>
           <Link
             href="/profile"

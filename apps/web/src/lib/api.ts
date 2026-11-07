@@ -93,6 +93,40 @@ export interface PortfolioSummary {
   canManage?: boolean;
 }
 
+export interface ApprovalListItem {
+  id: string;
+  submittedAt: string;
+  canDecide: boolean;
+  workLogVersion: {
+    id: string;
+    versionNumber: number;
+    workDate: string;
+    hours: string | number;
+    completion: string;
+    workLog: {
+      id: string;
+      number: string;
+      currentVersionId: string | null;
+      project: { id: string; number: string; name: string } | null;
+      author: { id: string; name: string };
+    };
+  };
+}
+
+export type ApprovalDecision = 'APPROVED' | 'RETURNED' | 'REJECTED';
+
+export interface NotificationItem {
+  id: string;
+  eventType: string;
+  resourceType: string;
+  resourceId: string | null;
+  title: string;
+  body: string | null;
+  status: 'UNREAD' | 'READ';
+  readAt: string | null;
+  createdAt: string;
+}
+
 export type WorkLogStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'RETURNED' | 'REJECTED';
 export type WorkLogVisibility = 'PRIVATE' | 'PROJECT_VISIBLE';
 
@@ -455,6 +489,26 @@ export const api = {
   mfaRecoveryRotate: (body: { password: string; code: string }) =>
     request<{ ok: boolean; recoveryCodes: string[] }>('/mfa/recovery-rotate', json('POST', body)),
 
+  listApprovals: (q: { page: number; pageSize: number }) =>
+    request<PaginatedResponse<ApprovalListItem>>(
+      `/approvals?page=${encodeURIComponent(String(q.page))}&pageSize=${encodeURIComponent(String(q.pageSize))}`,
+    ),
+  decideApproval: (
+    approvalId: string,
+    body: { decision: ApprovalDecision; comment?: string | null },
+  ) =>
+    request<{ id: string; status: ApprovalDecision; workLogStatus: string }>(
+      `/approvals/${id(approvalId)}/decisions`,
+      json('POST', body),
+    ),
+  listNotifications: (q: { page: number; pageSize: number; unreadOnly?: boolean }) =>
+    request<PaginatedResponse<NotificationItem> & { unread: number }>(
+      `/notifications?page=${encodeURIComponent(String(q.page))}&pageSize=${encodeURIComponent(
+        String(q.pageSize),
+      )}${q.unreadOnly ? '&unread=true' : ''}`,
+    ),
+  markNotificationRead: (notificationId: string) =>
+    request<{ ok: boolean }>(`/notifications/${id(notificationId)}/read`, json('POST', {})),
   listMyWorkLogs: (q: { page: number; pageSize: number }) =>
     request<PaginatedResponse<WorkLogListItem>>(
       `/my/work-logs?page=${encodeURIComponent(String(q.page))}&pageSize=${encodeURIComponent(String(q.pageSize))}`,

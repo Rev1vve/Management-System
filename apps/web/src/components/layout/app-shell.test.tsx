@@ -101,4 +101,15 @@ describe('AppShell', () => {
     );
     expect(screen.getByRole('link', { name: '用户管理' })).toBeInTheDocument();
   });
+
+  it('links the header bell to the notification centre', () => {
+    render(
+      <AppShell roles={['EMPLOYEE']}>
+        <div>内容</div>
+      </AppShell>,
+    );
+
+    const bell = screen.getByRole('link', { name: '通知中心' });
+    expect(bell).toHaveAttribute('href', '/notifications');
+  });
 });

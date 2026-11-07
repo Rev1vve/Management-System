@@ -1,5 +1,6 @@
 import {
   BarChart3,
+  Bell,
   BriefcaseBusiness,
   ClipboardCheck,
   ContactRound,
@@ -31,6 +32,7 @@ const ITEMS: Record<string, NavigationItem> = {
   orders: { href: '/orders', label: '订单', icon: ShoppingCart, group: 'workspace' },
   worklogs: { href: '/worklogs', label: '工作日志', icon: NotebookPen, group: 'workspace' },
   approvals: { href: '/approvals', label: '审批', icon: ClipboardCheck, group: 'management' },
+  notifications: { href: '/notifications', label: '通知', icon: Bell, group: 'management' },
   reports: { href: '/reports', label: '报表', icon: BarChart3, group: 'management' },
   users: { href: '/admin/users', label: '用户管理', icon: UsersRound, group: 'administration' },
   settings: { href: '/admin/settings', label: '系统设置', icon: Settings, group: 'administration' },
@@ -38,12 +40,30 @@ const ITEMS: Record<string, NavigationItem> = {
 };
 
 const ROLE_ITEM_KEYS: Record<SystemRoleKey, readonly string[]> = {
-  ADMIN: ['home', 'users', 'settings', 'profile'],
-  EMPLOYEE: ['home', 'customers', 'portfolios', 'projects', 'orders', 'worklogs', 'profile'],
-  APPROVER: ['home', 'approvals', 'profile'],
-  PROJECT_MANAGER: ['home', 'customers', 'portfolios', 'projects', 'orders', 'worklogs', 'profile'],
-  PORTFOLIO_DIRECTOR: ['home', 'portfolios', 'projects', 'reports', 'profile'],
-  EXECUTIVE: ['home', 'portfolios', 'projects', 'reports', 'profile'],
+  ADMIN: ['home', 'notifications', 'users', 'settings', 'profile'],
+  EMPLOYEE: [
+    'home',
+    'customers',
+    'portfolios',
+    'projects',
+    'orders',
+    'worklogs',
+    'notifications',
+    'profile',
+  ],
+  APPROVER: ['home', 'approvals', 'notifications', 'profile'],
+  PROJECT_MANAGER: [
+    'home',
+    'customers',
+    'portfolios',
+    'projects',
+    'orders',
+    'worklogs',
+    'notifications',
+    'profile',
+  ],
+  PORTFOLIO_DIRECTOR: ['home', 'portfolios', 'projects', 'reports', 'notifications', 'profile'],
+  EXECUTIVE: ['home', 'portfolios', 'projects', 'reports', 'notifications', 'profile'],
 };
 
 /**
@@ -60,6 +80,7 @@ export function getNavigationItems(roles: readonly SystemRoleKey[]): NavigationI
     'orders',
     'worklogs',
     'approvals',
+    'notifications',
     'reports',
     'users',
     'settings',

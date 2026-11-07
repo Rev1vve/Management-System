@@ -15,6 +15,7 @@ describe('getNavigationItems', () => {
     const hrefs = getNavigationItems(['APPROVER', 'PROJECT_MANAGER']).map((item) => item.href);
 
     expect(hrefs).toContain('/approvals');
+    expect(hrefs).toContain('/notifications');
     expect(hrefs).toContain('/projects');
     expect(hrefs).toContain('/worklogs');
     expect(new Set(hrefs).size).toBe(hrefs.length);
@@ -26,5 +27,15 @@ describe('getNavigationItems', () => {
     expect(hrefs).toEqual(expect.arrayContaining(['/', '/customers', '/projects', '/worklogs']));
     expect(hrefs).not.toContain('/admin/users');
     expect(hrefs).not.toContain('/reports');
+  });
+
+  it('gives an employee access to the notification centre', () => {
+    const hrefs = getNavigationItems(['EMPLOYEE']).map((item) => item.href);
+    expect(hrefs).toContain('/notifications');
+  });
+
+  it('gives an approver access to both approvals and notifications', () => {
+    const hrefs = getNavigationItems(['APPROVER']).map((item) => item.href);
+    expect(hrefs).toEqual(expect.arrayContaining(['/approvals', '/notifications']));
   });
 });
