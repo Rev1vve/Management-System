@@ -619,6 +619,12 @@ describe('task 7 AppModule HTTP contract on PostgreSQL', () => {
     const replacement = Buffer.from('%PDF-1.7\nreplacement');
     await rm(finalPath, { force: true });
     await writeFile(finalPath, replacement, { mode: 0o600 });
+    // 这个卷（OneDrive + NTFS）会复用刚刚删除/新建文件的 file id，
+    // 于是"不同路径 ⇒ 不同身份"并不成立，身份不匹配会退化成匹配。
+    // 用不可能出现在磁盘上的哨兵身份，才能确定性地构造"DB 身份 ≠ 文件身份"。
+    const SENTINEL = 0x7fffffffffffffffn;
+    const storageDevice = SENTINEL;
+    void identity;
     const pending = await prisma.attachment.create({
       data: {
         storageKey,
@@ -632,8 +638,8 @@ describe('task 7 AppModule HTTP contract on PostgreSQL', () => {
         customerId: customer.id,
         status: 'PENDING',
         storagePublishedAt: new Date(),
-        storageDevice: BigInt(identity.dev),
-        storageInode: BigInt(identity.ino),
+        storageDevice: storageDevice,
+        storageInode: SENTINEL,
       },
     });
 

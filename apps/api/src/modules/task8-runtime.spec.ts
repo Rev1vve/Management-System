@@ -97,6 +97,12 @@ describe('task 8 work-log HTTP surface', () => {
         '/api/v1/notifications/notification-1/read',
       );
       expect(markRead.status).toBe(401);
+
+      const summary = await request(app.getHttpServer()).get('/api/v1/reports/summary');
+      expect(summary.status).toBe(401);
+
+      const byProject = await request(app.getHttpServer()).get('/api/v1/reports/projects');
+      expect(byProject.status).toBe(401);
     } finally {
       await app.close();
     }

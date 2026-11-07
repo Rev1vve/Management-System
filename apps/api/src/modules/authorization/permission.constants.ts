@@ -26,6 +26,7 @@ export const PERMISSIONS = {
   PORTFOLIO_VIEW: 'portfolio:view',
   PORTFOLIO_MANAGE: 'portfolio:manage',
   REPORT_VIEW: 'report:view',
+  REPORT_DRILLDOWN: 'report:drilldown',
   APPROVAL_DECIDE: 'approval:decide',
 } as const;
 
@@ -42,6 +43,7 @@ export const PERMISSION_DESCRIPTIONS: Record<PermissionKey, string> = {
   [PERMISSIONS.PORTFOLIO_VIEW]: '查看项目集',
   [PERMISSIONS.PORTFOLIO_MANAGE]: '管理所属项目集',
   [PERMISSIONS.REPORT_VIEW]: '查看报表',
+  [PERMISSIONS.REPORT_DRILLDOWN]: '报表下钻（查看客户/个人级明细）',
   [PERMISSIONS.APPROVAL_DECIDE]: '审批决策',
 };
 
@@ -120,7 +122,12 @@ export const ROLE_DEFINITIONS: readonly RoleDefinition[] = [
   },
 ];
 
-/** All permission keys referenced by the matrix, de-duplicated. */
+/**
+ * All permission keys referenced by the matrix, de-duplicated.
+ *
+ * `report:drilldown` 不属于任何默认角色（D-027：高层看聚合报表，下钻明细必须单独授予），
+ * 因此显式并进来，保证 seed 会创建这条权限记录、可被单独分配给用户。
+ */
 export const ALL_PERMISSION_KEYS: readonly PermissionKey[] = [
-  ...new Set(ROLE_DEFINITIONS.flatMap((r) => r.permissions)),
+  ...new Set([...ROLE_DEFINITIONS.flatMap((r) => r.permissions), PERMISSIONS.REPORT_DRILLDOWN]),
 ];

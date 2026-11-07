@@ -15,6 +15,7 @@ import { PortfoliosModule } from './modules/portfolios/portfolios.module';
 import { ProjectsModule } from './modules/projects/projects.module';
 import { ApprovalsModule } from './modules/approvals/approvals.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
+import { ReportsModule } from './modules/reports/reports.module';
 import { WorkLogsModule } from './modules/work-logs/work-logs.module';
 
 @Module({
@@ -33,6 +34,7 @@ import { WorkLogsModule } from './modules/work-logs/work-logs.module';
     WorkLogsModule,
     ApprovalsModule,
     NotificationsModule,
+    ReportsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
