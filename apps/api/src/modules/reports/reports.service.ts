@@ -122,11 +122,18 @@ export class ReportsService {
         to: range.to,
         timezone: range.timezone,
       },
-      hours: { total: Math.round(hoursTotal * 100) / 100, truncated: hoursTruncated },
+      hours: {
+        total: Math.round(hoursTotal * 100) / 100,
+        truncated: hoursTruncated,
+        // 明确是"行数上限"导致偏低，而不是业务上没有工时。
+        truncatedReason: hoursTruncated ? 'ROW_LIMIT' : null,
+        limit: REPORT_ROW_LIMIT,
+      },
       approvals: {
         pending,
-        // 待办是"此刻"的快照，不随区间变化；字段名显式说明，避免被误读成区间内新增。
-        pendingAsOf: range.to,
+        // 待办是"此刻"的快照，不随区间变化：用真实业务日，而不是区间结束日，
+        // 否则查历史区间时会把实时数字标成过去的日期。
+        pendingAsOf: todayInBusinessZone(),
         decided,
         // 退回率 = 退回 / 已决策；没有决策时给 0 而不是 NaN。
         returnRate: decidedTotal === 0 ? 0 : decided.returned / decidedTotal,
@@ -228,6 +235,12 @@ export class ReportsService {
       range: { from: range.from, to: range.to, timezone: range.timezone },
       items,
       truncated: truncated || decisionsTruncated,
+      // 两种截断含义不同：行数上限会少算工时，决策截断会让退回率偏低。
+      truncatedReasons: [
+        ...(truncated ? ['WORK_LOG_ROW_LIMIT'] : []),
+        ...(decisionsTruncated ? ['DECISION_ROW_LIMIT'] : []),
+      ],
+      limit: REPORT_ROW_LIMIT,
     };
   }
 
@@ -285,6 +298,7 @@ export class ReportsService {
     return {
       range: { from: range.from, to: range.to, timezone: range.timezone },
       truncated,
+      limit: DETAIL_ROW_LIMIT,
       items: page.map((version) => ({
         workLogId: version.workLog.id,
         number: version.workLog.number,

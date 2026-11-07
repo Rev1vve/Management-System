@@ -84,7 +84,9 @@ describe('ReportsService.summary', () => {
     expect(result.hours.total).toBe(12.5);
     expect(result.hours.truncated).toBe(false);
     expect(result.approvals.pending).toBe(3);
-    expect(result.approvals.pendingAsOf).toBe('2026-11-07');
+    // 快照日期是真实业务日（今天），不是区间结束日。
+    expect(result.approvals.pendingAsOf).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(result.approvals.pendingAsOf).not.toBe('2026-11-07');
     expect(result.approvals.decided).toEqual({ approved: 6, returned: 2, rejected: 2 });
     expect(result.approvals.returnRate).toBeCloseTo(0.2);
   });
@@ -123,6 +125,40 @@ describe('ReportsService.summary', () => {
       }),
     );
     expect(prisma.project.findMany).not.toHaveBeenCalled();
+  });
+
+  it('exposes truncation reasons and the server-side limit', async () => {
+    const prisma = createPrismaMock();
+    const { service } = createService(prisma);
+
+    const summary = await service.summary('pm-1', { from: '2026-11-01', to: '2026-11-07' });
+    expect(summary.hours.truncated).toBe(false);
+    expect(summary.hours.truncatedReason).toBeNull();
+    expect(summary.hours.limit).toBe(5000);
+    // 待审是实时快照：标注的是"今天"，不是区间结束日。
+    expect(summary.approvals.pendingAsOf).not.toBe('2026-11-07');
+
+    const byProject = await service.byProject('pm-1', { from: '2026-11-01', to: '2026-11-07' });
+    expect(byProject.truncatedReasons).toEqual([]);
+    expect(byProject.limit).toBe(5000);
+  });
+
+  it('reports the row limit when the summary query is truncated', async () => {
+    const prisma = createPrismaMock();
+    prisma.workLog.findMany.mockResolvedValue(
+      Array.from({ length: 5001 }, () => ({
+        projectId: 'project-1',
+        project: { id: 'project-1', number: 'PRJ-1', name: '客户门户' },
+        currentVersion: { hours: '1' },
+      })),
+    );
+    const { service } = createService(prisma);
+
+    const summary = await service.summary('pm-1', { from: '2026-11-01', to: '2026-11-07' });
+
+    expect(summary.hours.truncated).toBe(true);
+    expect(summary.hours.truncatedReason).toBe('ROW_LIMIT');
+    expect(summary.hours.total).toBe(5000);
   });
 
   it('rejects calendar dates that do not exist instead of failing later', async () => {

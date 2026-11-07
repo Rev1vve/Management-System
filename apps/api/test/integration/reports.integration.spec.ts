@@ -162,6 +162,10 @@ describe('ReportsService (real PostgreSQL)', () => {
       decision: 'RETURNED',
       comment: '再补充',
     });
+    // 决策时间是"现在"，而报表按决策时间归入区间；把两条决策钉到区间内，避免用例依赖运行日期。
+    await prisma.$executeRawUnsafe(
+      `UPDATE "approval_decisions" SET "decided_at" = '2026-11-05T02:00:00Z'`,
+    );
 
     const summary = await reports.summary(managerId, range);
 

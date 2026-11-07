@@ -127,6 +127,52 @@ export interface NotificationItem {
   createdAt: string;
 }
 
+export interface ReportRange {
+  from: string;
+  to: string;
+  timezone: string;
+}
+
+export interface ReportSummary {
+  scope: 'OWN' | 'PROJECTS';
+  range: ReportRange;
+  hours: {
+    total: number;
+    truncated: boolean;
+    truncatedReason: string | null;
+    limit: number;
+  };
+  approvals: {
+    pending: number;
+    pendingAsOf: string;
+    decided: { approved: number; returned: number; rejected: number };
+    returnRate: number;
+  };
+  projects: { inScope: number };
+}
+
+export interface ReportProjectRow {
+  projectId: string;
+  number: string;
+  name: string;
+  hours: number;
+  approved: number;
+  returned: number;
+  rejected: number;
+  returnRate: number;
+}
+
+export interface ReportDrilldownRow {
+  workLogId: string;
+  number: string;
+  status: string;
+  author: { id: string; name: string };
+  versionNumber: number;
+  workDate: string;
+  hours: number;
+  completion: string;
+}
+
 export type WorkLogStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'RETURNED' | 'REJECTED';
 export type WorkLogVisibility = 'PRIVATE' | 'PROJECT_VISIBLE';
 
@@ -340,6 +386,14 @@ const json = (method: string, body?: unknown): RequestInit => ({
   ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 });
 
+function reportRangeQuery(q: { from?: string | undefined; to?: string | undefined }): string {
+  const params = new URLSearchParams();
+  if (q.from) params.set('from', q.from);
+  if (q.to) params.set('to', q.to);
+  const query = params.toString();
+  return query ? `?${query}` : '';
+}
+
 export const api = {
   listCustomers: (q: ListQuery) =>
     request<PaginatedResponse<CustomerSummary>>(listPath('customers', q)),
@@ -489,6 +543,23 @@ export const api = {
   mfaRecoveryRotate: (body: { password: string; code: string }) =>
     request<{ ok: boolean; recoveryCodes: string[] }>('/mfa/recovery-rotate', json('POST', body)),
 
+  reportSummary: (q: { from?: string | undefined; to?: string | undefined }) =>
+    request<ReportSummary>(`/reports/summary${reportRangeQuery(q)}`),
+  reportByProject: (q: { from?: string | undefined; to?: string | undefined }) =>
+    request<{
+      range: ReportRange;
+      items: ReportProjectRow[];
+      truncated: boolean;
+      truncatedReasons: string[];
+      limit: number;
+    }>(`/reports/projects${reportRangeQuery(q)}`),
+  reportDrilldown: (projectId: string, q: { from?: string | undefined; to?: string | undefined }) =>
+    request<{
+      range: ReportRange;
+      items: ReportDrilldownRow[];
+      truncated: boolean;
+      limit: number;
+    }>(`/reports/projects/${id(projectId)}/work-logs${reportRangeQuery(q)}`),
   listApprovals: (q: { page: number; pageSize: number }) =>
     request<PaginatedResponse<ApprovalListItem>>(
       `/approvals?page=${encodeURIComponent(String(q.page))}&pageSize=${encodeURIComponent(String(q.pageSize))}`,

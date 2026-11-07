@@ -1,8 +1,8 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import ReportsPage from './reports/page';
 import UsersPage from './admin/users/page';
+import SettingsPage from './admin/settings/page';
 
 const navigationMocks = vi.hoisted(() => ({ pathname: '/customers' }));
 
@@ -19,9 +19,10 @@ vi.mock('next/link', () => ({
 }));
 
 describe('business page wireframes', () => {
+  // /reports 已经是真实页面，只剩管理中心这两个占位页。
   it.each([
-    ['报表', ReportsPage],
     ['用户管理', UsersPage],
+    ['系统设置', SettingsPage],
   ])('renders %s as a productized preparing state', (heading, Page) => {
     const { container } = render(<Page />);
 
@@ -35,10 +36,10 @@ describe('business page wireframes', () => {
   });
 
   it('does not treat a page requirement as the current user role', () => {
-    render(<ReportsPage />);
+    render(<UsersPage />);
 
-    expect(screen.getByRole('heading', { name: '报表' })).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: '报表' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '用户管理' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: '用户管理' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: '报表' })).not.toBeInTheDocument();
   });
 });
