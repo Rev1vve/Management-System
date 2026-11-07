@@ -81,6 +81,22 @@ describe('task 8 work-log HTTP surface', () => {
 
       const myLogs = await request(app.getHttpServer()).get('/api/v1/my/work-logs');
       expect(myLogs.status).toBe(401);
+
+      const approvals = await request(app.getHttpServer()).get('/api/v1/approvals');
+      expect(approvals.status).toBe(401);
+
+      const decide = await request(app.getHttpServer())
+        .post('/api/v1/approvals/approval-1/decisions')
+        .send({ decision: 'APPROVED' });
+      expect(decide.status).toBe(401);
+
+      const notifications = await request(app.getHttpServer()).get('/api/v1/notifications');
+      expect(notifications.status).toBe(401);
+
+      const markRead = await request(app.getHttpServer()).post(
+        '/api/v1/notifications/notification-1/read',
+      );
+      expect(markRead.status).toBe(401);
     } finally {
       await app.close();
     }
