@@ -57,6 +57,11 @@ jobs:
           COMPOSE_PROJECT_NAME: project-operations-center-e2e
           POSTGRES_PASSWORD_FILE: ${{ github.workspace }}/infra/secrets/local/dev-postgres-password.txt
 
+      - name: Generate the Prisma client
+        # apps/api/src/generated 是 gitignore 的产物：e2e 的准备脚本直接复用它，
+        # 所以必须在跑 Playwright 之前生成，否则全局准备阶段就无法连接数据库。
+        run: pnpm --filter @project-operations/api exec prisma generate
+
       - name: Install Chromium
         run: pnpm --filter @project-operations/web exec playwright install --with-deps chromium
 
@@ -132,6 +137,11 @@ jobs:
           COMPOSE_PROJECT_NAME: project-operations-center-e2e-full
           POSTGRES_PASSWORD_FILE: ${{ github.workspace }}/infra/secrets/local/dev-postgres-password.txt
 
+      - name: Generate the Prisma client
+        # apps/api/src/generated 是 gitignore 的产物：e2e 的准备脚本直接复用它，
+        # 所以必须在跑 Playwright 之前生成，否则全局准备阶段就无法连接数据库。
+        run: pnpm --filter @project-operations/api exec prisma generate
+
       - name: Install browsers
         run: pnpm --filter @project-operations/web exec playwright install --with-deps chromium
 
@@ -203,6 +213,11 @@ jobs:
         env:
           COMPOSE_PROJECT_NAME: project-operations-center-e2e-nightly
           POSTGRES_PASSWORD_FILE: ${{ github.workspace }}/infra/secrets/local/dev-postgres-password.txt
+
+      - name: Generate the Prisma client
+        # apps/api/src/generated 是 gitignore 的产物：e2e 的准备脚本直接复用它，
+        # 所以必须在跑 Playwright 之前生成，否则全局准备阶段就无法连接数据库。
+        run: pnpm --filter @project-operations/api exec prisma generate
 
       - name: Install Chromium and Firefox
         run: pnpm --filter @project-operations/web exec playwright install --with-deps chromium firefox
