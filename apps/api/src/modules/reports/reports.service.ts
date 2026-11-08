@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../../database/prisma.service';
+import type { Prisma } from '../../generated/prisma/client';
 import { PERMISSIONS } from '../authorization/permission.constants';
 import { RolesService } from '../roles/roles.service';
 import {
@@ -93,9 +94,9 @@ export class ReportsService {
       this.prisma.project.count({
         where:
           scope.kind === 'PROJECTS'
-            ? { id: { in: scope.projectIds }, status: 'ACTIVE', deletedAt: null }
+            ? { id: { in: scope.projectIds }, status: { not: 'ARCHIVED' }, deletedAt: null }
             : {
-                status: 'ACTIVE',
+                status: { not: 'ARCHIVED' },
                 deletedAt: null,
                 workLogs: { some: { authorId: userId, deletedAt: null } },
               },
@@ -145,10 +146,198 @@ export class ReportsService {
   async byProject(userId: string, input: RangeInput) {
     const range = this.resolveRange(input);
     const scope = await this.resolveScope(userId);
+    return this.aggregateProjects(range, this.logWhereFor(scope));
+  }
 
+  /**
+   * 我管理的项目：只看调用者以 PROJECT_MANAGER 身份参与的项目。
+   * 这里不做"能力推断"——项目:manage 是能力，管理关系才是事实。
+   */
+  async managedProjects(userId: string, input: RangeInput) {
+    const range = this.resolveRange(input);
+    const memberships = await this.prisma.projectMembership.findMany({
+      where: {
+        userId,
+        user: { status: 'ACTIVE', deletedAt: null },
+        project: { status: { not: 'ARCHIVED' }, deletedAt: null },
+        roles: { some: { role: 'PROJECT_MANAGER' } },
+      },
+      select: { projectId: true },
+    });
+    const projectIds = memberships.map((membership) => membership.projectId);
+    if (projectIds.length === 0) {
+      return {
+        range: { from: range.from, to: range.to, timezone: range.timezone },
+        items: [],
+        projectsManaged: 0,
+        truncated: false,
+        truncatedReasons: [],
+        limit: REPORT_ROW_LIMIT,
+      };
+    }
+    const result = await this.aggregateProjects(range, {
+      projectId: { in: projectIds },
+      deletedAt: null,
+    });
+    // 清单以"我管理的项目"为准：区间内没有活动也要出现在列表里（数字为 0），
+    // 否则周初的默认 7 天窗口会让页面看起来"我什么都不管理"。
+    const projects = await this.prisma.project.findMany({
+      where: { id: { in: projectIds }, deletedAt: null },
+      select: { id: true, number: true, name: true, status: true, completionPercent: true },
+      orderBy: { number: 'asc' },
+    });
+    const aggregated = new Map(result.items.map((row) => [row.projectId, row]));
+    const items = projects.map((project) => {
+      const row = aggregated.get(project.id);
+      return {
+        projectId: project.id,
+        number: project.number,
+        name: project.name,
+        hours: row?.hours ?? 0,
+        approved: row?.approved ?? 0,
+        returned: row?.returned ?? 0,
+        rejected: row?.rejected ?? 0,
+        returnRate: row?.returnRate ?? 0,
+        status: project.status,
+        completionPercent: project.completionPercent,
+      };
+    });
+    return {
+      range: { from: range.from, to: range.to, timezone: range.timezone },
+      items,
+      projectsManaged: projects.length,
+      truncated: result.truncated,
+      truncatedReasons: result.truncatedReasons,
+      limit: result.limit,
+    };
+  }
+
+  /**
+   * 项目集视角：只统计调用者**属于**的项目集（PortfolioMembership 是事实，
+   * `portfolio:view` 只是能力）。没有任何项目集归属时返回空集，而不是全部。
+   */
+  async portfolios(userId: string, input: RangeInput) {
+    const range = this.resolveRange(input);
+    // 归属总数（含已归档的项目集）用于区分"没有归属"与"归属的集都归档了"。
+    const allMemberships = await this.prisma.portfolioMembership.count({
+      where: { userId, user: { status: 'ACTIVE', deletedAt: null } },
+    });
+    const memberships = await this.prisma.portfolioMembership.findMany({
+      where: {
+        userId,
+        user: { status: 'ACTIVE', deletedAt: null },
+        // 与项目集列表同一口径：归档/软删的项目集不再统计。
+        portfolio: { status: { not: 'ARCHIVED' }, deletedAt: null },
+      },
+      select: { portfolioId: true, portfolio: { select: { id: true, name: true } } },
+    });
+    if (memberships.length === 0) {
+      return {
+        range: { from: range.from, to: range.to, timezone: range.timezone },
+        items: [],
+        portfoliosTotal: allMemberships,
+        truncated: false,
+        truncatedReasons: [],
+        limit: REPORT_ROW_LIMIT,
+      };
+    }
+    const portfolioIds = memberships.map((membership) => membership.portfolioId);
+    const names = new Map(
+      memberships.map((membership) => [membership.portfolioId, membership.portfolio.name]),
+    );
+
+    const projects = await this.prisma.project.findMany({
+      where: {
+        portfolioId: { in: portfolioIds },
+        status: { not: 'ARCHIVED' },
+        deletedAt: null,
+      },
+      select: { id: true, portfolioId: true },
+    });
+    const projectToPortfolio = new Map(
+      projects.map((project) => [project.id, project.portfolioId ?? '']),
+    );
+    if (projects.length === 0) {
+      return {
+        range: { from: range.from, to: range.to, timezone: range.timezone },
+        items: [],
+        portfoliosTotal: allMemberships,
+        truncated: false,
+        truncatedReasons: [],
+        limit: REPORT_ROW_LIMIT,
+      };
+    }
+
+    const result = await this.aggregateProjects(range, {
+      projectId: { in: projects.map((project) => project.id) },
+      deletedAt: null,
+    });
+
+    const grouped = new Map<
+      string,
+      {
+        portfolioId: string;
+        name: string;
+        projects: number;
+        hours: number;
+        approved: number;
+        returned: number;
+        rejected: number;
+      }
+    >();
+    for (const project of projects) {
+      const portfolioId = project.portfolioId ?? '';
+      const existing = grouped.get(portfolioId);
+      if (existing) {
+        existing.projects += 1;
+        continue;
+      }
+      grouped.set(portfolioId, {
+        portfolioId,
+        name: names.get(portfolioId) ?? '未命名项目集',
+        projects: 1,
+        hours: 0,
+        approved: 0,
+        returned: 0,
+        rejected: 0,
+      });
+    }
+    for (const row of result.items) {
+      const portfolioId = projectToPortfolio.get(row.projectId);
+      if (!portfolioId) continue;
+      const target = grouped.get(portfolioId);
+      if (!target) continue;
+      target.hours += row.hours;
+      target.approved += row.approved;
+      target.returned += row.returned;
+      target.rejected += row.rejected;
+    }
+
+    const items = [...grouped.values()]
+      .map((row) => {
+        const decidedTotal = row.approved + row.returned + row.rejected;
+        return {
+          ...row,
+          hours: Math.round(row.hours * 100) / 100,
+          returnRate: decidedTotal === 0 ? 0 : row.returned / decidedTotal,
+        };
+      })
+      .sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name));
+
+    return {
+      range: { from: range.from, to: range.to, timezone: range.timezone },
+      items,
+      portfoliosTotal: allMemberships,
+      truncated: result.truncated,
+      truncatedReasons: result.truncatedReasons,
+      limit: result.limit,
+    };
+  }
+
+  private async aggregateProjects(range: ResolvedRange, logWhere: Record<string, unknown>) {
     const currentLogs = await this.prisma.workLog.findMany({
       where: {
-        ...this.logWhereFor(scope),
+        ...logWhere,
         status: { not: 'DRAFT' },
         currentVersionId: { not: null },
         currentVersion: { workDate: { gte: range.fromDate, lt: range.toDateExclusive } },
@@ -158,7 +347,6 @@ export class ReportsService {
         project: { select: { id: true, number: true, name: true } },
         currentVersion: { select: { hours: true } },
       },
-      // 聚合走内存，用显式上限避免无界加载；触发上限时在返回体里标注。
       take: REPORT_ROW_LIMIT + 1,
     });
     const truncated = currentLogs.length > REPORT_ROW_LIMIT;
@@ -167,7 +355,7 @@ export class ReportsService {
     const decisions = await this.prisma.approvalDecision.findMany({
       where: {
         decidedAt: { gte: range.fromUtc, lt: range.toUtcExclusive },
-        approvalRequest: { workLogVersion: { workLog: this.logWhereFor(scope) } },
+        approvalRequest: { workLogVersion: { workLog: logWhere } },
       },
       select: {
         decision: true,
@@ -175,7 +363,6 @@ export class ReportsService {
           select: { workLogVersion: { select: { workLog: { select: { projectId: true } } } } },
         },
       },
-      // 决策同样设上限，避免无界加载；截断时通过 truncated 告知调用方。
       take: REPORT_ROW_LIMIT + 1,
     });
     const decisionsTruncated = decisions.length > REPORT_ROW_LIMIT;
@@ -235,7 +422,6 @@ export class ReportsService {
       range: { from: range.from, to: range.to, timezone: range.timezone },
       items,
       truncated: truncated || decisionsTruncated,
-      // 两种截断含义不同：行数上限会少算工时，决策截断会让退回率偏低。
       truncatedReasons: [
         ...(truncated ? ['WORK_LOG_ROW_LIMIT'] : []),
         ...(decisionsTruncated ? ['DECISION_ROW_LIMIT'] : []),
@@ -318,14 +504,24 @@ export class ReportsService {
       return { kind: 'OWN', userId };
     }
     const projects = await this.prisma.project.findMany({
-      where: { status: 'ACTIVE', deletedAt: null },
+      // 报表口径统一为"排除 ARCHIVED"：byProject / managed-projects / portfolios
+      // 必须能对上账，否则同一个项目在不同页面里一会出现一会消失。
+      where: { status: { not: 'ARCHIVED' }, deletedAt: null },
       select: { id: true },
     });
     return { kind: 'PROJECTS', projectIds: projects.map((project) => project.id) };
   }
 
-  private logWhereFor(scope: Scope) {
-    if (scope.kind === 'OWN') return { authorId: scope.userId, deletedAt: null };
+  private logWhereFor(scope: Scope): Prisma.WorkLogWhereInput {
+    // 两个分支都必须排除归档/软删项目，否则"员工视角"会看到已归档项目的工时，
+    // 与 project:view 视角对不上账。
+    if (scope.kind === 'OWN') {
+      return {
+        authorId: scope.userId,
+        deletedAt: null,
+        project: { status: { not: 'ARCHIVED' as const }, deletedAt: null },
+      };
+    }
     return { projectId: { in: scope.projectIds }, deletedAt: null };
   }
 

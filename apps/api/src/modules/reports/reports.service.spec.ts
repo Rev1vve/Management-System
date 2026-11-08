@@ -51,6 +51,13 @@ function createPrismaMock() {
       count: vi.fn().mockResolvedValue(2),
       findMany: vi.fn().mockResolvedValue([{ id: 'project-1' }, { id: 'project-2' }]),
     },
+    projectMembership: { findMany: vi.fn().mockResolvedValue([{ projectId: 'project-1' }]) },
+    portfolioMembership: {
+      findMany: vi
+        .fn()
+        .mockResolvedValue([{ portfolioId: 'pf-1', portfolio: { id: 'pf-1', name: '政企线' } }]),
+      count: vi.fn().mockResolvedValue(1),
+    },
   };
 }
 
@@ -292,6 +299,155 @@ describe('ReportsService.drilldown', () => {
     expect(result.items).toHaveLength(1);
     expect(result.items[0]).toEqual(
       expect.objectContaining({ workLogId: 'wl-1', hours: 3, completion: '完成接口联调' }),
+    );
+  });
+
+  it('limits managed projects to the ones the caller really manages', async () => {
+    const prisma = createPrismaMock();
+    prisma.projectMembership.findMany.mockResolvedValue([{ projectId: 'project-1' }]);
+    prisma.project.findMany.mockResolvedValue([
+      {
+        id: 'project-1',
+        number: 'PRJ-1',
+        name: '客户门户',
+        status: 'ACTIVE',
+        completionPercent: 40,
+      },
+      // 区间内没有活动的项目也必须在清单里（数字为 0）。
+      {
+        id: 'project-9',
+        number: 'PRJ-9',
+        name: '零活动项目',
+        status: 'ON_HOLD',
+        completionPercent: 10,
+      },
+    ]);
+    const { service } = createService(prisma, [
+      PERMISSIONS.PROJECT_VIEW,
+      PERMISSIONS.PROJECT_MANAGE,
+    ]);
+
+    const result = await service.managedProjects('pm-1', { from: '2026-11-01', to: '2026-11-07' });
+
+    expect(result.projectsManaged).toBe(2);
+    expect(result.items.map((row) => row.projectId)).toEqual(['project-1', 'project-9']);
+    expect(result.items[0]).toEqual(
+      expect.objectContaining({ projectId: 'project-1', status: 'ACTIVE', completionPercent: 40 }),
+    );
+    // 零活动项目仍出现，且数字为 0。
+    expect(result.items[1]).toEqual(
+      expect.objectContaining({ projectId: 'project-9', hours: 0, approved: 0, returnRate: 0 }),
+    );
+    // 作用域是"我管理的项目"，不是"全部项目"。
+    expect(prisma.workLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ projectId: { in: ['project-1'] }, deletedAt: null }),
+      }),
+    );
+  });
+
+  it('returns an empty page when the caller manages nothing', async () => {
+    const prisma = createPrismaMock();
+    prisma.projectMembership.findMany.mockResolvedValue([]);
+    const { service } = createService(prisma);
+
+    const result = await service.managedProjects('employee-1', {
+      from: '2026-11-01',
+      to: '2026-11-07',
+    });
+
+    expect(result.items).toEqual([]);
+    expect(result.projectsManaged).toBe(0);
+    expect(prisma.workLog.findMany).not.toHaveBeenCalled();
+  });
+
+  it('limits portfolio rows to portfolios the caller belongs to', async () => {
+    const prisma = createPrismaMock();
+    prisma.portfolioMembership.findMany.mockResolvedValue([
+      { portfolioId: 'pf-1', portfolio: { id: 'pf-1', name: '政企线' } },
+    ]);
+    prisma.project.findMany.mockResolvedValue([{ id: 'project-1', portfolioId: 'pf-1' }]);
+    const { service } = createService(prisma, [PERMISSIONS.PORTFOLIO_VIEW]);
+
+    const result = await service.portfolios('director-1', { from: '2026-11-01', to: '2026-11-07' });
+
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        portfolioId: 'pf-1',
+        name: '政企线',
+        projects: 1,
+        // 只有 pf-1 下的 project-1 计入（4.5 + 2），project-2 属于别的项目集。
+        hours: 6.5,
+        returned: 1,
+      }),
+    ]);
+  });
+
+  it('returns nothing when the caller belongs to no portfolio', async () => {
+    const prisma = createPrismaMock();
+    prisma.portfolioMembership.findMany.mockResolvedValue([]);
+    const { service } = createService(prisma);
+
+    const result = await service.portfolios('exec-1', { from: '2026-11-01', to: '2026-11-07' });
+
+    expect(result.items).toEqual([]);
+    expect(prisma.project.findMany).not.toHaveBeenCalled();
+  });
+
+  it('excludes archived projects from the employee scope and the in-scope count', async () => {
+    const prisma = createPrismaMock();
+    const { service } = createService(prisma, []);
+
+    await service.summary('employee-1', { from: '2026-11-01', to: '2026-11-07' });
+
+    const call = prisma.workLog.findMany.mock.calls[0]?.[0] as {
+      where: Record<string, unknown>;
+    };
+    expect(call.where.project).toEqual({
+      status: { not: 'ARCHIVED' },
+      deletedAt: null,
+    });
+    expect(prisma.project.count).toHaveBeenCalledWith({
+      where: {
+        status: { not: 'ARCHIVED' },
+        deletedAt: null,
+        workLogs: { some: { authorId: 'employee-1', deletedAt: null } },
+      },
+    });
+  });
+
+  it('scopes the cross-project report set to non-archived projects', async () => {
+    const prisma = createPrismaMock();
+    const { service } = createService(prisma, [PERMISSIONS.PROJECT_VIEW]);
+
+    await service.byProject('pm-1', { from: '2026-11-01', to: '2026-11-07' });
+
+    expect(prisma.project.findMany).toHaveBeenCalledWith({
+      where: { status: { not: 'ARCHIVED' }, deletedAt: null },
+      select: { id: true },
+    });
+  });
+
+  it('keeps the portfolio total when every membership points at an archived portfolio', async () => {
+    const prisma = createPrismaMock();
+    prisma.portfolioMembership.count.mockResolvedValue(2);
+    prisma.portfolioMembership.findMany.mockResolvedValue([]);
+    const { service } = createService(prisma);
+
+    const result = await service.portfolios('director-1', {
+      from: '2026-11-01',
+      to: '2026-11-07',
+    });
+
+    expect(result.items).toEqual([]);
+    // 归属还在，只是都归档了：不能被读成"你不属于任何项目集"。
+    expect(result.portfoliosTotal).toBe(2);
+    expect(prisma.portfolioMembership.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          portfolio: { status: { not: 'ARCHIVED' }, deletedAt: null },
+        }),
+      }),
     );
   });
 });

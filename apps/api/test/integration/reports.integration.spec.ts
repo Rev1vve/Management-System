@@ -31,6 +31,8 @@ const TABLES = [
   'work_logs',
   'project_membership_roles',
   'project_memberships',
+  'portfolio_memberships',
+  'portfolios',
   'projects',
   'users',
 ];
@@ -398,5 +400,157 @@ describe('ReportsService multi-version and boundary cases (real PostgreSQL)', ()
     const days = Math.round((to.getTime() - from.getTime()) / 86_400_000) + 1;
 
     expect(days).toBe(7);
+  });
+});
+
+describe('ReportsService managed projects and portfolios (real PostgreSQL)', () => {
+  it('shows a manager only the projects they manage', async () => {
+    const managerId = await createUser('manager');
+    const otherManagerId = await createUser('other-manager');
+    const authorId = await createUser('author');
+    await grantSystemRole(managerId, 'PROJECT_MANAGER');
+    await grantSystemRole(otherManagerId, 'PROJECT_MANAGER');
+    const mine = await createProject('PRJ-MINE');
+    const theirs = await createProject('PRJ-THEIRS');
+    await addMember(managerId, mine, ['PROJECT_MANAGER']);
+    await addMember(otherManagerId, theirs, ['PROJECT_MANAGER']);
+    const approverId = await createUser('approver');
+    await addMember(authorId, mine, ['MEMBER']);
+    await addMember(authorId, theirs, ['MEMBER']);
+    await addMember(approverId, mine, ['APPROVER']);
+    await addMember(approverId, theirs, ['APPROVER']);
+
+    for (const [projectId, hours] of [
+      [mine, 3],
+      [theirs, 8],
+    ] as const) {
+      const log = await workLogs.createDraft(authorId, {
+        projectId,
+        workDate: '2026-11-03',
+        hours,
+        completion: '工作内容',
+      });
+      await workLogs.submit(authorId, log.id, { approverId });
+    }
+
+    const result = await reports.managedProjects(managerId, range);
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toEqual(
+      expect.objectContaining({ projectId: mine, hours: 3, status: 'ACTIVE' }),
+    );
+  });
+
+  it('returns an empty managed list for someone who manages nothing', async () => {
+    const employeeId = await createUser('employee');
+    const result = await reports.managedProjects(employeeId, range);
+    expect(result.items).toEqual([]);
+  });
+
+  it('groups portfolio rows only for portfolios the caller belongs to', async () => {
+    const directorId = await createUser('director');
+    const outsiderId = await createUser('outsider');
+    const authorId = await createUser('author');
+    const approverId = await createUser('approver');
+    await grantSystemRole(directorId, 'PORTFOLIO_DIRECTOR');
+    const portfolio = await prisma.portfolio.create({ data: { name: '政企线' } });
+    const otherPortfolio = await prisma.portfolio.create({ data: { name: '金融线' } });
+    await prisma.portfolioMembership.create({
+      data: { userId: directorId, portfolioId: portfolio.id },
+    });
+    await prisma.portfolioMembership.create({
+      data: { userId: outsiderId, portfolioId: otherPortfolio.id },
+    });
+
+    const inScope = await prisma.project.create({
+      data: { number: 'PRJ-PF1', name: '项目一', status: 'ACTIVE', portfolioId: portfolio.id },
+    });
+    const outside = await prisma.project.create({
+      data: {
+        number: 'PRJ-PF2',
+        name: '项目二',
+        status: 'ACTIVE',
+        portfolioId: otherPortfolio.id,
+      },
+    });
+    await addMember(authorId, inScope.id, ['MEMBER']);
+    await addMember(authorId, outside.id, ['MEMBER']);
+    await addMember(approverId, inScope.id, ['APPROVER']);
+    await addMember(approverId, outside.id, ['APPROVER']);
+    for (const [projectId, hours] of [
+      [inScope.id, 2],
+      [outside.id, 7],
+    ] as const) {
+      const log = await workLogs.createDraft(authorId, {
+        projectId,
+        workDate: '2026-11-04',
+        hours,
+        completion: '内容',
+      });
+      await workLogs.submit(authorId, log.id, { approverId });
+    }
+
+    const result = await reports.portfolios(directorId, range);
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]).toEqual(
+      expect.objectContaining({ portfolioId: portfolio.id, name: '政企线', hours: 2, projects: 1 }),
+    );
+  });
+
+  it('returns no portfolio rows for someone outside every portfolio', async () => {
+    const executiveId = await createUser('exec');
+    await grantSystemRole(executiveId, 'EXECUTIVE');
+    const result = await reports.portfolios(executiveId, range);
+    expect(result.items).toEqual([]);
+  });
+});
+
+describe('ReportsService scope consistency (real PostgreSQL)', () => {
+  it('keeps employee hours and in-scope projects aligned when a project is archived', async () => {
+    const authorId = await createUser('author');
+    const approverId = await createUser('approver');
+    const archived = await createProject('PRJ-ARCHIVED');
+    const live = await createProject('PRJ-LIVE');
+    await addMember(authorId, archived, ['MEMBER']);
+    await addMember(authorId, live, ['MEMBER']);
+    await addMember(approverId, archived, ['APPROVER']);
+    await addMember(approverId, live, ['APPROVER']);
+    for (const [projectId, hours] of [
+      [archived, 9],
+      [live, 2],
+    ] as const) {
+      const log = await workLogs.createDraft(authorId, {
+        projectId,
+        workDate: '2026-11-03',
+        hours,
+        completion: '内容',
+      });
+      await workLogs.submit(authorId, log.id, { approverId });
+    }
+    await prisma.project.update({ where: { id: archived }, data: { status: 'ARCHIVED' } });
+
+    const summary = await reports.summary(authorId, range);
+    const byProject = await reports.byProject(authorId, range);
+
+    // 归档项目的 9h 不该出现在员工视角，也不该算进 in-scope 计数。
+    expect(summary.hours.total).toBe(2);
+    expect(summary.projects.inScope).toBe(1);
+    expect(byProject.items.map((row) => row.projectId)).toEqual([live]);
+  });
+
+  it('reports portfolio membership even when every portfolio is archived', async () => {
+    const directorId = await createUser('director');
+    const portfolio = await prisma.portfolio.create({ data: { name: '政企线' } });
+    await prisma.portfolioMembership.create({
+      data: { userId: directorId, portfolioId: portfolio.id },
+    });
+    await prisma.portfolio.update({ where: { id: portfolio.id }, data: { status: 'ARCHIVED' } });
+
+    const result = await reports.portfolios(directorId, range);
+
+    expect(result.items).toEqual([]);
+    // 归属事实仍成立，页面据此区分"没有归属"与"归属已归档"。
+    expect(result.portfoliosTotal).toBe(1);
   });
 });

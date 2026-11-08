@@ -173,6 +173,22 @@ export interface ReportDrilldownRow {
   completion: string;
 }
 
+export interface ManagedProjectRow extends ReportProjectRow {
+  status: string;
+  completionPercent: number;
+}
+
+export interface PortfolioRow {
+  portfolioId: string;
+  name: string;
+  projects: number;
+  hours: number;
+  approved: number;
+  returned: number;
+  rejected: number;
+  returnRate: number;
+}
+
 export type WorkLogStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'RETURNED' | 'REJECTED';
 export type WorkLogVisibility = 'PRIVATE' | 'PROJECT_VISIBLE';
 
@@ -543,6 +559,24 @@ export const api = {
   mfaRecoveryRotate: (body: { password: string; code: string }) =>
     request<{ ok: boolean; recoveryCodes: string[] }>('/mfa/recovery-rotate', json('POST', body)),
 
+  reportManagedProjects: (q: { from?: string | undefined; to?: string | undefined }) =>
+    request<{
+      range: ReportRange;
+      items: ManagedProjectRow[];
+      projectsManaged: number;
+      truncated: boolean;
+      truncatedReasons: string[];
+      limit: number;
+    }>(`/reports/managed-projects${reportRangeQuery(q)}`),
+  reportPortfolios: (q: { from?: string | undefined; to?: string | undefined }) =>
+    request<{
+      range: ReportRange;
+      items: PortfolioRow[];
+      portfoliosTotal: number;
+      truncated: boolean;
+      truncatedReasons: string[];
+      limit: number;
+    }>(`/reports/portfolios${reportRangeQuery(q)}`),
   reportSummary: (q: { from?: string | undefined; to?: string | undefined }) =>
     request<ReportSummary>(`/reports/summary${reportRangeQuery(q)}`),
   reportByProject: (q: { from?: string | undefined; to?: string | undefined }) =>

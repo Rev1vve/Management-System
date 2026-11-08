@@ -22,6 +22,22 @@ export class ReportsController {
     });
   }
 
+  @Get('managed-projects')
+  managedProjects(@Req() request: Authenticated, @Query() query: Record<string, unknown>) {
+    return this.reports.managedProjects(request.user.id, {
+      from: typeof query.from === 'string' ? query.from : null,
+      to: typeof query.to === 'string' ? query.to : null,
+    });
+  }
+
+  @Get('portfolios')
+  portfolios(@Req() request: Authenticated, @Query() query: Record<string, unknown>) {
+    return this.reports.portfolios(request.user.id, {
+      from: typeof query.from === 'string' ? query.from : null,
+      to: typeof query.to === 'string' ? query.to : null,
+    });
+  }
+
   @Get('projects')
   byProject(@Req() request: Authenticated, @Query() query: Record<string, unknown>) {
     return this.reports.byProject(request.user.id, {

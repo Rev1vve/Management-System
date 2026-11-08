@@ -103,6 +103,12 @@ describe('task 8 work-log HTTP surface', () => {
 
       const byProject = await request(app.getHttpServer()).get('/api/v1/reports/projects');
       expect(byProject.status).toBe(401);
+
+      const managed = await request(app.getHttpServer()).get('/api/v1/reports/managed-projects');
+      expect(managed.status).toBe(401);
+
+      const portfolios = await request(app.getHttpServer()).get('/api/v1/reports/portfolios');
+      expect(portfolios.status).toBe(401);
     } finally {
       await app.close();
     }

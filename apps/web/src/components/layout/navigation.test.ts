@@ -38,4 +38,14 @@ describe('getNavigationItems', () => {
     const hrefs = getNavigationItems(['APPROVER']).map((item) => item.href);
     expect(hrefs).toEqual(expect.arrayContaining(['/approvals', '/notifications']));
   });
+
+  it('gives a project manager the managed-projects view', () => {
+    const hrefs = getNavigationItems(['PROJECT_MANAGER']).map((item) => item.href);
+    expect(hrefs).toContain('/managed-projects');
+  });
+
+  it('gives a portfolio director the portfolio overview', () => {
+    const hrefs = getNavigationItems(['PORTFOLIO_DIRECTOR']).map((item) => item.href);
+    expect(hrefs).toContain('/portfolio-overview');
+  });
 });
