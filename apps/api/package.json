@@ -6,7 +6,7 @@
     "build": "prisma generate && tsc -p tsconfig.build.json",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:seed": "prisma generate && prisma db seed",
-    "dev": "tsx watch src/main.ts",
+    "dev": "nest start --watch",
     "generate": "prisma generate",
     "lint": "eslint .",
     "start": "node dist/main.js",
@@ -28,6 +28,7 @@
     "rxjs": "7.8.2"
   },
   "devDependencies": {
+    "@nestjs/cli": "12.0.12",
     "@nestjs/testing": "11.2.1",
     "@types/cookie-parser": "1.4.10",
     "@types/express": "5.0.6",

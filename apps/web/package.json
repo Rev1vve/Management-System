@@ -9,7 +9,7 @@
     "start": "next start --hostname ${HOSTNAME:-127.0.0.1} --port ${WEB_PORT:-3000}",
     "test": "node ../../infra/scripts/run-with-local-tmp.mjs vitest run",
     "typecheck": "tsc --noEmit",
-    "e2e": "playwright test",
+    "e2e": "pnpm --filter @project-operations/api exec prisma generate && playwright test",
     "e2e:install": "playwright install chromium"
   },
   "dependencies": {
@@ -33,6 +33,7 @@
   },
   "devDependencies": {
     "@playwright/test": "1.65.0",
+    "@prisma/adapter-pg": "7.9.1",
     "@testing-library/jest-dom": "7.0.1",
     "@testing-library/react": "16.3.2",
     "@testing-library/user-event": "14.6.5",
