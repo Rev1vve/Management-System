@@ -1,6 +1,8 @@
 name: E2E
 
 on:
+  push:
+    branches: [main]
   pull_request:
   # 定时任务覆盖更广的浏览器组合：失败需要有人处理，否则"自动跑着但仍然腐烂"。
   # 负责人：仓库维护者（见 .hermes/plans/MASTER_PLAN.md 的运行数据记录）。
