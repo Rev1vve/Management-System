@@ -33,3 +33,7 @@ overrides:
   vite: 8.2.4
   'brace-expansion@<2.0.0': 1.1.21
   'brace-expansion@>=4.0.0': 5.0.12
+  # 2026-11-08 audit：qs 的 DoS 公告（express 传递依赖）与 minimatch 的 glob 放大公告。
+  # 都抬到已修补的最小版本，不跨大版本。
+  qs: 6.16.1
+  minimatch: 11.0.1
