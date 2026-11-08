@@ -1,0 +1,18 @@
+# CI 专用叠加文件：把 dev 编排里的 PostgreSQL 暴露到 127.0.0.1:5433，
+# 这样 e2e 可以在宿主机上跑真实的 `pnpm dev` 进程（而不是把应用也塞进容器）。
+#
+# 用法：
+#   docker compose -f infra/compose.dev.yml -f infra/compose.ci-e2e.yml up -d postgres
+services:
+  postgres:
+    ports:
+      - name: postgres-e2e
+        target: 5432
+        published: '5433'
+        host_ip: 127.0.0.1
+        protocol: tcp
+
+networks:
+  # dev 编排默认 internal: true（容器间私网）；e2e 需要宿主机访问，所以这里放开。
+  backend:
+    internal: false

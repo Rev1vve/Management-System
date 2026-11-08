@@ -46,7 +46,7 @@ async function expectNoHorizontalScroll(page: import('@playwright/test').Page) {
 }
 
 test.describe('authenticated pages', () => {
-  test('an employee logs in and sees the dashboard', async ({ page }) => {
+  test('an employee logs in and sees the dashboard', { tag: '@smoke' }, async ({ page }) => {
     await loginAs(page, 'employee');
 
     await expect(page.getByRole('heading', { name: '工作台' })).toBeVisible();
