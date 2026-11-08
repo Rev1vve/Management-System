@@ -6,6 +6,9 @@ node_modules/
 .next/
 dist/
 coverage/
+# Playwright
+apps/web/test-results/
+apps/web/playwright-report/
 .turbo/
 *.tsbuildinfo
 __pycache__/

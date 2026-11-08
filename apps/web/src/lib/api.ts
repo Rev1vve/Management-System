@@ -29,6 +29,8 @@ async function apiFetch(path: string, init: RequestInit = {}): Promise<Response>
     } catch {
       /* retain honest generic message */
     }
+    // 401 时把人送回登录页（公开页除外），而不是让受保护页面卡在错误态。
+    redirectToLoginIfNeeded(response.status);
     throw new ApiError(message, response.status);
   }
   return response;
@@ -38,6 +40,19 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await apiFetch(path, init);
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
+}
+
+/**
+ * 会话失效时统一回到登录页：否则受保护页面只会显示"登录已过期"的错误态，
+ * 用户看不出该做什么。登录/激活等公开页不跳转，避免循环。
+ */
+export function redirectToLoginIfNeeded(status: number): boolean {
+  if (status !== 401) return false;
+  if (typeof window === 'undefined') return false;
+  const publicPaths = ['/login', '/activate', '/mfa', '/mfa-setup'];
+  if (publicPaths.some((path) => window.location.pathname.startsWith(path))) return false;
+  window.location.assign('/login');
+  return true;
 }
 
 export interface PaginatedResponse<T> {

@@ -4,11 +4,13 @@
   "private": true,
   "scripts": {
     "build": "next build",
-    "dev": "next dev --hostname 127.0.0.1 --port ${WEB_PORT:-3000}",
+    "dev": "next dev --hostname 127.0.0.1",
     "lint": "eslint .",
     "start": "next start --hostname ${HOSTNAME:-127.0.0.1} --port ${WEB_PORT:-3000}",
     "test": "node ../../infra/scripts/run-with-local-tmp.mjs vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "e2e": "playwright test",
+    "e2e:install": "playwright install chromium"
   },
   "dependencies": {
     "@hookform/resolvers": "5.9.1",
@@ -30,6 +32,7 @@
     "zod": "4.6.6"
   },
   "devDependencies": {
+    "@playwright/test": "1.65.0",
     "@testing-library/jest-dom": "7.0.1",
     "@testing-library/react": "16.3.2",
     "@testing-library/user-event": "14.6.5",

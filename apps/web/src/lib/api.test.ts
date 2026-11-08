@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
-import { api } from './api';
+import { api, redirectToLoginIfNeeded } from './api';
 import type { OrderCreate } from './api';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -147,4 +147,43 @@ describe('business API client', () => {
       });
     },
   );
+});
+
+describe('redirectToLoginIfNeeded', () => {
+  const originalLocation = window.location;
+
+  afterEach(() => {
+    Object.defineProperty(window, 'location', { value: originalLocation, writable: true });
+  });
+
+  function stubLocation(pathname: string) {
+    const assign = vi.fn();
+    Object.defineProperty(window, 'location', {
+      value: { pathname, assign },
+      writable: true,
+    });
+    return assign;
+  }
+
+  it('sends a 401 on a protected page to the login page', () => {
+    const assign = stubLocation('/dashboard');
+
+    expect(redirectToLoginIfNeeded(401)).toBe(true);
+    expect(assign).toHaveBeenCalledWith('/login');
+  });
+
+  it('never redirects from a public page, to avoid a loop', () => {
+    for (const pathname of ['/login', '/activate', '/mfa', '/mfa-setup']) {
+      const assign = stubLocation(pathname);
+      expect(redirectToLoginIfNeeded(401)).toBe(false);
+      expect(assign).not.toHaveBeenCalled();
+    }
+  });
+
+  it('ignores non-401 statuses', () => {
+    const assign = stubLocation('/dashboard');
+
+    expect(redirectToLoginIfNeeded(403)).toBe(false);
+    expect(assign).not.toHaveBeenCalled();
+  });
 });
