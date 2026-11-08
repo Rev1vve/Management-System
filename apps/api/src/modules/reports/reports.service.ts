@@ -6,6 +6,7 @@ import { PERMISSIONS } from '../authorization/permission.constants';
 import { RolesService } from '../roles/roles.service';
 import {
   BUSINESS_TIMEZONE,
+  assertCalendarDate,
   todayInBusinessZone,
   zonedDayEndExclusiveUtc,
   zonedDayStartUtc,
@@ -32,13 +33,6 @@ type Scope = { kind: 'OWN'; userId: string } | { kind: 'PROJECTS'; projectIds: s
 
 const REPORT_ROW_LIMIT = 5000;
 const DETAIL_ROW_LIMIT = 200;
-
-/** 正则通过但日历上不存在的日期（2026-13-01、2026-02-31）必须拒绝，不能变成 Prisma 500。 */
-function isRealCalendarDate(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const parsed = new Date(`${value}T00:00:00.000Z`);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
-}
 
 /**
  * 报表（任务 10）。
@@ -609,9 +603,8 @@ export class ReportsService {
     const defaultFromDate = new Date(`${today}T00:00:00.000Z`);
     defaultFromDate.setUTCDate(defaultFromDate.getUTCDate() - 6);
     const from = input?.from ?? defaultFromDate.toISOString().slice(0, 10);
-    if (!isRealCalendarDate(from) || !isRealCalendarDate(to)) {
-      throw new BadRequestException('日期必须是真实存在的 YYYY-MM-DD 日期');
-    }
+    assertCalendarDate(from);
+    assertCalendarDate(to);
     const fromUtc = zonedDayStartUtc(from);
     const toUtcExclusive = zonedDayEndExclusiveUtc(to);
     if (fromUtc >= toUtcExclusive) throw new BadRequestException('起始日期必须早于结束日期');

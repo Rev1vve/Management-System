@@ -3,6 +3,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import {
   BUSINESS_TIMEZONE,
+  assertCalendarDate,
   zonedDayEndExclusiveUtc,
   zonedDayStartUtc,
 } from '../reports/business-time';
@@ -34,6 +35,9 @@ export class AdminAuditService {
     const createdAt: { gte?: Date; lt?: Date } = {};
     if (query?.from) createdAt.gte = this.parseDay(query.from);
     if (query?.to) createdAt.lt = this.parseDayEnd(query.to);
+    if (createdAt.gte && createdAt.lt && createdAt.gte >= createdAt.lt) {
+      throw new BadRequestException('起始日期必须早于结束日期');
+    }
 
     const where = {
       ...(query?.actorId ? { actorId: query.actorId } : {}),
@@ -69,18 +73,12 @@ export class AdminAuditService {
   }
 
   private parseDay(value: string): Date {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(value))
-      throw new BadRequestException('日期格式必须为 YYYY-MM-DD');
-    const parsed = zonedDayStartUtc(value);
-    if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) === 'Invalid') {
-      throw new BadRequestException('日期不存在');
-    }
-    return parsed;
+    assertCalendarDate(value);
+    return zonedDayStartUtc(value);
   }
 
   private parseDayEnd(value: string): Date {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(value))
-      throw new BadRequestException('日期格式必须为 YYYY-MM-DD');
+    assertCalendarDate(value);
     return zonedDayEndExclusiveUtc(value);
   }
 }

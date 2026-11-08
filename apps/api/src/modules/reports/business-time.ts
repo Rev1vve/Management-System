@@ -1,9 +1,26 @@
+import { BadRequestException } from '@nestjs/common';
+
 /**
  * 业务时区（D-051：Australia/Melbourne）。
  *
  * 数据库统一存 UTC；报表按业务时区切分自然日。这里只做"本地日 → UTC 瞬时"的换算，
  * 用两次逼近处理夏令时（AEDT +11 / AEST +10），避免手写偏移表。
  */
+
+/**
+ * 正则通过但日历上不存在的日期（2026-13-01、2026-02-31）必须拒绝：
+ * Date.UTC 会把它们静默滚动到别的月份。
+ */
+export function assertCalendarDate(value: string): void {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new BadRequestException('日期格式必须为 YYYY-MM-DD');
+  }
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+    throw new BadRequestException('日期不存在');
+  }
+}
+
 export const BUSINESS_TIMEZONE = 'Australia/Melbourne';
 
 const formatterCache = new Map<string, Intl.DateTimeFormat>();

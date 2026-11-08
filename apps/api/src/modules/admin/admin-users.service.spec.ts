@@ -27,11 +27,11 @@ function createPrismaMock() {
         },
       ]),
       count: vi.fn().mockResolvedValue(1),
-      findUnique: vi.fn().mockResolvedValue({ id: 'user-1' }),
+      findUnique: vi.fn().mockResolvedValue({ id: 'user-1', mfaEnabled: true }),
       update: vi.fn().mockResolvedValue({ id: 'user-1', status: 'SUSPENDED' }),
     },
     systemRole: {
-      findMany: vi.fn().mockResolvedValue([{ id: 'role-1', key: 'EMPLOYEE' }]),
+      findMany: vi.fn().mockResolvedValue([{ id: 'role-1', key: 'EMPLOYEE', requiresMfa: false }]),
     },
     userSystemRole: {
       deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
@@ -47,8 +47,9 @@ function createPrismaMock() {
 
 function createService(prisma: ReturnType<typeof createPrismaMock>) {
   const audit = { record: vi.fn().mockResolvedValue(undefined) };
-  const service = new AdminUsersService(prisma as never, audit as never);
-  return { service, audit };
+  const sessions = { revokeAll: vi.fn().mockResolvedValue(undefined) };
+  const service = new AdminUsersService(prisma as never, audit as never, sessions as never);
+  return { service, audit, sessions };
 }
 
 describe('AdminUsersService', () => {
@@ -85,7 +86,10 @@ describe('AdminUsersService', () => {
     await expect(service.setRoles('user-1', 'user-1', ['EMPLOYEE'])).rejects.toBeInstanceOf(
       ForbiddenException,
     );
-    expect(audit.record).not.toHaveBeenCalled();
+    // 被拒的尝试也要留痕（result=FAILURE），但绝不能真的改到自己的账号。
+    expect(audit.record).toHaveBeenCalledTimes(2);
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({ result: 'FAILURE' }));
+    expect(prisma.user.update).not.toHaveBeenCalled();
   });
 
   it('records an audit entry when the status changes', async () => {
@@ -149,9 +153,83 @@ describe('AdminUsersService', () => {
       },
     ]);
   });
+
+  it('refuses a privileged role when the target has no TOTP, and audits the refusal', async () => {
+    const prisma = createPrismaMock();
+    prisma.systemRole.findMany.mockResolvedValue([
+      { id: 'role-1', key: 'EXECUTIVE', requiresMfa: true },
+    ]);
+    prisma.user.findUnique.mockResolvedValue({ id: 'user-1', mfaEnabled: false });
+    const { service, audit, sessions } = createService(prisma);
+
+    await expect(service.setRoles('admin-1', 'user-1', ['EXECUTIVE'])).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(prisma.userSystemRole.deleteMany).not.toHaveBeenCalled();
+    expect(sessions.revokeAll).not.toHaveBeenCalled();
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'user.roles.changed', result: 'FAILURE' }),
+    );
+  });
+
+  it('revokes sessions when a status change suspends the account', async () => {
+    const { service, sessions } = createService(prisma);
+
+    await service.setStatus('admin-1', 'user-1', 'SUSPENDED');
+
+    expect(sessions.revokeAll).toHaveBeenCalledWith('user-1');
+  });
+
+  it('revokes sessions after a role change so new rights require a fresh login', async () => {
+    const { service, sessions } = createService(prisma);
+
+    await service.setRoles('admin-1', 'user-1', ['EMPLOYEE']);
+
+    expect(sessions.revokeAll).toHaveBeenCalledWith('user-1');
+  });
+
+  it('audits rejected operations instead of failing silently', async () => {
+    const { service, audit } = createService(prisma);
+
+    await expect(service.setStatus('admin-1', 'user-1', 'DELETED')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    await expect(service.setStatus('user-1', 'user-1', 'SUSPENDED')).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'user.status.changed', result: 'FAILURE' }),
+    );
+  });
+
+  it('never stores client-supplied secrets in the failure audit summary', async () => {
+    const { service, audit } = createService(prisma);
+
+    await expect(
+      service.setStatus('admin-1', 'user-1', 'password=hunter2 token=abc123'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    const summary = (audit.record.mock.calls[0]![0] as { summary: string }).summary;
+    expect(summary).not.toContain('hunter2');
+    expect(summary).not.toContain('abc123');
+    // 失败审计同样走默认脱敏，不显式关闭。
+    const call = audit.record.mock.calls[0]![0] as { redactSensitive?: boolean };
+    expect(call.redactSensitive).not.toBe(false);
+  });
 });
 
 describe('AdminAuditService', () => {
+  it('rejects impossible calendar dates and inverted ranges', async () => {
+    const prisma = createPrismaMock();
+    const service = new AdminAuditService(prisma as never);
+
+    await expect(service.list({ from: '2026-02-31' })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.list({ from: '2026-11-08', to: '2026-11-01' })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+  });
+
   it('lists audit rows read-only with a stable order and filters', async () => {
     const prisma = createPrismaMock();
     const service = new AdminAuditService(prisma as never);

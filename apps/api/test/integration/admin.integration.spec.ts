@@ -1,4 +1,4 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { PrismaService } from '../../src/database/prisma.service';
@@ -11,6 +11,7 @@ import {
   ROLE_DEFINITIONS,
 } from '../../src/modules/authorization/permission.constants';
 import { RolesService } from '../../src/modules/roles/roles.service';
+import { SessionsService } from '../../src/modules/sessions/sessions.service';
 
 /**
  * 管理中心（任务 11，真实 PostgreSQL）：
@@ -66,7 +67,7 @@ async function ensureSystemRoles(): Promise<void> {
 
 beforeAll(() => {
   const audit = new AuditService(prisma);
-  users = new AdminUsersService(prisma, audit);
+  users = new AdminUsersService(prisma, audit, new SessionsService(prisma));
   audits = new AdminAuditService(prisma);
 });
 
@@ -134,7 +135,8 @@ describe('admin users (real PostgreSQL)', () => {
       data: { systemRoleId: tempRole.id, permissionId: drilldown.id },
     });
 
-    await users.setRoles(adminId, executiveId, ['EXECUTIVE', 'REPORT_DRILLDOWN_TEMP']);
+    // 只授予临时角色（不要求 MFA）——特权角色的 TOTP 门槛由专门用例覆盖。
+    await users.setRoles(adminId, executiveId, ['REPORT_DRILLDOWN_TEMP']);
 
     const permissions = await new RolesService(prisma).listUserPermissions(executiveId);
     expect(permissions).toContain(PERMISSIONS.REPORT_DRILLDOWN);
@@ -207,5 +209,114 @@ describe('admin audit (real PostgreSQL)', () => {
         /create|update|delete|write/i.test(name),
       ),
     ).toEqual([]);
+  });
+});
+
+describe('admin safeguards (real PostgreSQL)', () => {
+  it('refuses privileged roles for a user without TOTP and audits the attempt', async () => {
+    const adminId = await createUser('admin');
+    const targetId = await createUser('target');
+
+    await expect(users.setRoles(adminId, targetId, ['EXECUTIVE'])).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+
+    const roles = await prisma.userSystemRole.count({ where: { userId: targetId } });
+    expect(roles).toBe(0);
+    const audit = await audits.list({ page: 1, pageSize: 10, action: 'user.roles.changed' });
+    expect(audit.items[0]!.result).toBe('FAILURE');
+  });
+
+  it('grants a privileged role once the target enabled TOTP and revokes their sessions', async () => {
+    const adminId = await createUser('admin');
+    const targetId = await createUser('target');
+    await prisma.user.update({ where: { id: targetId }, data: { mfaEnabled: true } });
+    await prisma.session.create({
+      data: {
+        userId: targetId,
+        tokenHash: 'hash-target',
+        status: 'ACTIVE',
+        expiresAt: new Date(Date.now() + 86_400_000),
+      },
+    });
+
+    await users.setRoles(adminId, targetId, ['EXECUTIVE']);
+
+    const remaining = await prisma.session.count({
+      where: { userId: targetId, revokedAt: null },
+    });
+    expect(remaining).toBe(0);
+  });
+
+  it('revokes sessions when the account is suspended', async () => {
+    const adminId = await createUser('admin');
+    const targetId = await createUser('target');
+    await prisma.session.create({
+      data: {
+        userId: targetId,
+        tokenHash: 'hash-suspend',
+        status: 'ACTIVE',
+        expiresAt: new Date(Date.now() + 86_400_000),
+      },
+    });
+
+    await users.setStatus(adminId, targetId, 'SUSPENDED');
+
+    const remaining = await prisma.session.count({
+      where: { userId: targetId, revokedAt: null },
+    });
+    expect(remaining).toBe(0);
+  });
+});
+
+describe('admin audit hygiene (real PostgreSQL)', () => {
+  it('does not persist client-supplied secrets in the failure summary', async () => {
+    const adminId = await createUser('admin');
+    const targetId = await createUser('target');
+
+    await expect(
+      users.setStatus(adminId, targetId, 'password=hunter2 token=abc123'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    const rows = await prisma.auditLog.findMany({ where: { action: 'user.status.changed' } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.summary).not.toContain('hunter2');
+    expect(rows[0]!.summary).not.toContain('abc123');
+  });
+
+  it('keeps the pre-suspension token dead even after the account is re-enabled', async () => {
+    const adminId = await createUser('admin');
+    const targetId = await createUser('target');
+    const session = await prisma.session.create({
+      data: {
+        userId: targetId,
+        tokenHash: 'hash-reenable',
+        status: 'ACTIVE',
+        expiresAt: new Date(Date.now() + 86_400_000),
+      },
+    });
+
+    await users.setStatus(adminId, targetId, 'SUSPENDED');
+    await users.setStatus(adminId, targetId, 'ACTIVE');
+
+    const after = await prisma.session.findUniqueOrThrow({ where: { id: session.id } });
+    expect(after.revokedAt).not.toBeNull();
+  });
+
+  it('revokes sessions when the account is archived', async () => {
+    const adminId = await createUser('admin');
+    const targetId = await createUser('target');
+    await prisma.session.create({
+      data: {
+        userId: targetId,
+        tokenHash: 'hash-archive',
+        status: 'ACTIVE',
+        expiresAt: new Date(Date.now() + 86_400_000),
+      },
+    });
+
+    await users.setStatus(adminId, targetId, 'ARCHIVED');
+
+    expect(await prisma.session.count({ where: { userId: targetId, revokedAt: null } })).toBe(0);
   });
 });
