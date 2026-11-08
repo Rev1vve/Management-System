@@ -1,0 +1,231 @@
+name: E2E
+
+on:
+  pull_request:
+  # 定时任务覆盖更广的浏览器组合：失败需要有人处理，否则"自动跑着但仍然腐烂"。
+  # 负责人：仓库维护者（见 .hermes/plans/MASTER_PLAN.md 的运行数据记录）。
+  schedule:
+    - cron: '0 21 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Playwright 以真实 dev 命令启动应用：这正是本次"依赖注入全空导致登录 500"的故障面。
+  E2E_ALLOW_DB_WRITES: 'true'
+  DATABASE_URL: postgresql://project_operations:e2e-password@127.0.0.1:5433/project_operations
+  MFA_SECRET_KEY: '2222222222222222222222222222222222222222222222222222222222222222'
+  ATTACHMENTS_ROOT: ${{ github.workspace }}/.e2e-attachments
+
+jobs:
+  # 每次 push / PR 都跑：只跑 @smoke 标记的最小集，守护"应用能不能起来、核心链路能不能走通"。
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+
+      - name: Prepare disposable PostgreSQL password secret
+        run: |
+          mkdir -p infra/secrets/local
+          printf '%s' 'e2e-password' > infra/secrets/local/dev-postgres-password.txt
+          chmod 600 infra/secrets/local/dev-postgres-password.txt
+
+      - name: Start PostgreSQL reachable from the host
+        run: docker compose -f infra/compose.dev.yml -f infra/compose.ci-e2e.yml up -d postgres
+        env:
+          COMPOSE_PROJECT_NAME: project-operations-center-e2e
+          POSTGRES_PASSWORD_FILE: ${{ github.workspace }}/infra/secrets/local/dev-postgres-password.txt
+          POSTGRES_DB: project_operations
+          POSTGRES_USER: project_operations
+
+      - name: Migrate and seed
+        run: |
+          docker compose -f infra/compose.dev.yml -f infra/compose.ci-e2e.yml run --rm db-tools pnpm db:migrate:deploy
+          docker compose -f infra/compose.dev.yml -f infra/compose.ci-e2e.yml run --rm db-tools pnpm db:seed
+        env:
+          COMPOSE_PROJECT_NAME: project-operations-center-e2e
+          POSTGRES_PASSWORD_FILE: ${{ github.workspace }}/infra/secrets/local/dev-postgres-password.txt
+
+      - name: Install Chromium
+        run: pnpm --filter @project-operations/web exec playwright install --with-deps chromium
+
+      - name: Start the application with the real dev commands
+        run: |
+          mkdir -p "$ATTACHMENTS_ROOT"
+          chmod 700 "$ATTACHMENTS_ROOT"
+          pnpm --filter @project-operations/api dev > /tmp/api-dev.log 2>&1 &
+          pnpm --filter @project-operations/web dev > /tmp/web-dev.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf -o /dev/null http://127.0.0.1:3000/login && curl -s -o /dev/null http://127.0.0.1:3001/api/v1/health; then
+              echo "services ready after ${i}s"; exit 0
+            fi
+            if curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3001/api/v1/auth/me | grep -qE '40[01]'; then
+              echo "api ready after ${i}s"; break
+            fi
+            sleep 2
+          done
+          sleep 5
+          echo "--- api log ---"; tail -40 /tmp/api-dev.log
+          echo "--- web log ---"; tail -20 /tmp/web-dev.log
+
+      - name: Run the smoke suite
+        run: pnpm --filter @project-operations/web exec playwright test --grep @smoke
+
+      - name: Show dev logs on failure
+        if: failure()
+        run: |
+          echo "--- api dev log ---"; tail -80 /tmp/api-dev.log || true
+          echo "--- web dev log ---"; tail -40 /tmp/web-dev.log || true
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-smoke-report
+          path: apps/web/test-results
+          retention-days: 7
+
+  # PR 合并前跑完整 e2e，与其他检查并行；耗时用输出记录下来，作为"是否值得每次 push 都跑"的依据。
+  full:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+
+      - name: Prepare disposable PostgreSQL password secret
+        run: |
+          mkdir -p infra/secrets/local
+          printf '%s' 'e2e-password' > infra/secrets/local/dev-postgres-password.txt
+          chmod 600 infra/secrets/local/dev-postgres-password.txt
+
+      - name: Start PostgreSQL reachable from the host
+        run: docker compose -f infra/compose.dev.yml -f infra/compose.ci-e2e.yml up -d postgres
+        env:
+          COMPOSE_PROJECT_NAME: project-operations-center-e2e-full
+          POSTGRES_PASSWORD_FILE: ${{ github.workspace }}/infra/secrets/local/dev-postgres-password.txt
+          POSTGRES_DB: project_operations
+          POSTGRES_USER: project_operations
+
+      - name: Migrate and seed
+        run: |
+          docker compose -f infra/compose.dev.yml -f infra/compose.ci-e2e.yml run --rm db-tools pnpm db:migrate:deploy
+          docker compose -f infra/compose.dev.yml -f infra/compose.ci-e2e.yml run --rm db-tools pnpm db:seed
+        env:
+          COMPOSE_PROJECT_NAME: project-operations-center-e2e-full
+          POSTGRES_PASSWORD_FILE: ${{ github.workspace }}/infra/secrets/local/dev-postgres-password.txt
+
+      - name: Install browsers
+        run: pnpm --filter @project-operations/web exec playwright install --with-deps chromium
+
+      - name: Start the application with the real dev commands
+        run: |
+          mkdir -p "$ATTACHMENTS_ROOT"
+          chmod 700 "$ATTACHMENTS_ROOT"
+          pnpm --filter @project-operations/api dev > /tmp/api-dev.log 2>&1 &
+          pnpm --filter @project-operations/web dev > /tmp/web-dev.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf -o /dev/null http://127.0.0.1:3000/login; then echo "web ready after ${i}s"; break; fi
+            sleep 2
+          done
+          sleep 5
+          tail -30 /tmp/api-dev.log
+
+      - name: Run the full suite and record the duration
+        run: |
+          start=$(date +%s)
+          pnpm --filter @project-operations/web exec playwright test
+          echo "e2e_duration_seconds=$(( $(date +%s) - start ))" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Show dev logs on failure
+        if: failure()
+        run: |
+          echo "--- api dev log ---"; tail -80 /tmp/api-dev.log || true
+          echo "--- web dev log ---"; tail -40 /tmp/web-dev.log || true
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-full-report
+          path: apps/web/test-results
+          retention-days: 7
+
+  # 每周定时：更广的浏览器组合。需要在仓库里明确有人处理失败。
+  scheduled-browsers:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+
+      - name: Prepare disposable PostgreSQL password secret
+        run: |
+          mkdir -p infra/secrets/local
+          printf '%s' 'e2e-password' > infra/secrets/local/dev-postgres-password.txt
+          chmod 600 infra/secrets/local/dev-postgres-password.txt
+
+      - name: Start PostgreSQL reachable from the host
+        run: docker compose -f infra/compose.dev.yml -f infra/compose.ci-e2e.yml up -d postgres
+        env:
+          COMPOSE_PROJECT_NAME: project-operations-center-e2e-nightly
+          POSTGRES_PASSWORD_FILE: ${{ github.workspace }}/infra/secrets/local/dev-postgres-password.txt
+          POSTGRES_DB: project_operations
+          POSTGRES_USER: project_operations
+
+      - name: Migrate and seed
+        run: |
+          docker compose -f infra/compose.dev.yml -f infra/compose.ci-e2e.yml run --rm db-tools pnpm db:migrate:deploy
+          docker compose -f infra/compose.dev.yml -f infra/compose.ci-e2e.yml run --rm db-tools pnpm db:seed
+        env:
+          COMPOSE_PROJECT_NAME: project-operations-center-e2e-nightly
+          POSTGRES_PASSWORD_FILE: ${{ github.workspace }}/infra/secrets/local/dev-postgres-password.txt
+
+      - name: Install Chromium and Firefox
+        run: pnpm --filter @project-operations/web exec playwright install --with-deps chromium firefox
+
+      - name: Start the application with the real dev commands
+        run: |
+          mkdir -p "$ATTACHMENTS_ROOT"
+          chmod 700 "$ATTACHMENTS_ROOT"
+          pnpm --filter @project-operations/api dev > /tmp/api-dev.log 2>&1 &
+          pnpm --filter @project-operations/web dev > /tmp/web-dev.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf -o /dev/null http://127.0.0.1:3000/login; then echo "web ready after ${i}s"; break; fi
+            sleep 2
+          done
+          sleep 5
+          tail -30 /tmp/api-dev.log
+
+      - name: Run the full suite on Chromium and Firefox
+        run: pnpm --filter @project-operations/web exec playwright test
+        env:
+          E2E_BROWSERS: chromium,firefox
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-scheduled-report
+          path: apps/web/test-results
+          retention-days: 14
