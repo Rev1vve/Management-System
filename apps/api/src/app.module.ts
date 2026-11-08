@@ -13,6 +13,7 @@ import { CustomersModule } from './modules/customers/customers.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { PortfoliosModule } from './modules/portfolios/portfolios.module';
 import { ProjectsModule } from './modules/projects/projects.module';
+import { AdminModule } from './modules/admin/admin.module';
 import { ApprovalsModule } from './modules/approvals/approvals.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { ReportsModule } from './modules/reports/reports.module';
@@ -33,6 +34,7 @@ import { WorkLogsModule } from './modules/work-logs/work-logs.module';
     AttachmentsModule,
     WorkLogsModule,
     ApprovalsModule,
+    AdminModule,
     NotificationsModule,
     ReportsModule,
   ],
