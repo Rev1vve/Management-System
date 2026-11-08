@@ -74,6 +74,31 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  api-tools:
+    image: ${API_TOOLS_IMAGE:-project-operations-api-tools:local}
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+      target: db-tools
+    profiles:
+      - tools
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-project_operations}
+      POSTGRES_USER: ${POSTGRES_USER:-project_operations}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: '5432'
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - source: postgres_password
+        target: postgres_password
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+
   attachments-init:
     image: alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
     profiles:
@@ -105,6 +130,10 @@ services:
 
   web:
     image: ${WEB_IMAGE:-project-operations-web:local}
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      target: web-runtime
     profiles:
       - application
     environment:

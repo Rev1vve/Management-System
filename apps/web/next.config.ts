@@ -3,6 +3,9 @@ import type { NextConfig } from 'next';
 const API_ORIGIN = process.env.API_ORIGIN ?? 'http://127.0.0.1:3001';
 
 const nextConfig: NextConfig = {
+  // 生产镜像用 standalone 产物（见 apps/web/Dockerfile）。
+  // 只在构建镜像时开启：Windows/OneDrive 上 standalone 会创建符号链接并失败（EPERM）。
+  ...(process.env.NEXT_OUTPUT_STANDALONE === 'true' ? { output: 'standalone' as const } : {}),
   agentRules: false,
   devIndicators: false,
   poweredByHeader: false,
