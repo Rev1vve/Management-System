@@ -18,6 +18,15 @@ import type { PermissionKey } from '../authorization/permission.constants';
 export class RolesService {
   constructor(private readonly prisma: PrismaService) {}
 
+  /** System role keys held by the user (used for scope decisions, not for permissions). */
+  async listUserRoleKeys(userId: string): Promise<string[]> {
+    const memberships = await this.prisma.userSystemRole.findMany({
+      where: { userId },
+      select: { systemRole: { select: { key: true } } },
+    });
+    return memberships.map((membership) => membership.systemRole.key);
+  }
+
   /** De-duplicated permission keys granted through all system roles. */
   async listUserPermissions(userId: string): Promise<PermissionKey[]> {
     const memberships = await this.prisma.userSystemRole.findMany({

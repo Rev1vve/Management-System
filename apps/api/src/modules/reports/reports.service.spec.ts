@@ -49,7 +49,17 @@ function createPrismaMock() {
     },
     project: {
       count: vi.fn().mockResolvedValue(2),
-      findMany: vi.fn().mockResolvedValue([{ id: 'project-1' }, { id: 'project-2' }]),
+      findMany: vi.fn().mockResolvedValue([
+        { id: 'project-1' },
+        { id: 'project-2' },
+        {
+          id: 'project-1',
+          number: 'PRJ-1',
+          name: '客户门户',
+          status: 'ACTIVE',
+          completionPercent: 40,
+        },
+      ]),
     },
     projectMembership: { findMany: vi.fn().mockResolvedValue([{ projectId: 'project-1' }]) },
     portfolioMembership: {
@@ -65,7 +75,11 @@ function createService(
   prisma: ReturnType<typeof createPrismaMock>,
   permissions: string[] = [PERMISSIONS.PROJECT_VIEW],
 ) {
-  const roles = { listUserPermissions: vi.fn().mockResolvedValue(permissions) };
+  const roles = {
+    listUserPermissions: vi.fn().mockResolvedValue(permissions),
+    // 默认按"高层"处理：作用域是全部非归档项目（方案 A）。
+    listUserRoleKeys: vi.fn().mockResolvedValue(['EXECUTIVE']),
+  };
   return { service: new ReportsService(prisma as never, roles as never), roles };
 }
 
@@ -447,6 +461,55 @@ describe('ReportsService.drilldown', () => {
         where: expect.objectContaining({
           portfolio: { status: { not: 'ARCHIVED' }, deletedAt: null },
         }),
+      }),
+    );
+  });
+
+  it('narrows a portfolio director to the projects inside their portfolios', async () => {
+    const prisma = createPrismaMock();
+    prisma.projectMembership.findMany.mockResolvedValue([{ projectId: 'project-9' }]);
+    prisma.portfolioMembership.findMany.mockResolvedValue([{ portfolioId: 'pf-1' }]);
+    prisma.project.findMany.mockResolvedValue([{ id: 'project-in-portfolio' }]);
+    const roles = {
+      listUserPermissions: vi
+        .fn()
+        .mockResolvedValue([PERMISSIONS.PROJECT_VIEW, PERMISSIONS.PORTFOLIO_VIEW]),
+      listUserRoleKeys: vi.fn().mockResolvedValue(['PORTFOLIO_DIRECTOR']),
+    };
+    const service = new ReportsService(prisma as never, roles as never);
+
+    await service.summary('director-1', { from: '2026-11-01', to: '2026-11-07' });
+
+    // 总监看不到项目集之外的项目（之前是"全部非归档项目"）。
+    expect(prisma.workLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ projectId: { in: ['project-in-portfolio'] } }),
+      }),
+    );
+    expect(prisma.project.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ portfolioId: { in: ['pf-1'] } }),
+      }),
+    );
+  });
+
+  it('narrows a project manager without portfolios to their own projects', async () => {
+    const prisma = createPrismaMock();
+    prisma.portfolioMembership.findMany.mockResolvedValue([]);
+    prisma.projectMembership.findMany.mockResolvedValue([{ projectId: 'project-7' }]);
+    const roles = {
+      listUserPermissions: vi
+        .fn()
+        .mockResolvedValue([PERMISSIONS.PROJECT_VIEW, PERMISSIONS.PROJECT_MANAGE]),
+      listUserRoleKeys: vi.fn().mockResolvedValue(['PROJECT_MANAGER']),
+    };
+    const service = new ReportsService(prisma as never, roles as never);
+
+    await service.summary('pm-1', { from: '2026-11-01', to: '2026-11-07' });
+
+    expect(prisma.workLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ projectId: { in: ['project-7'] } }),
       }),
     );
   });

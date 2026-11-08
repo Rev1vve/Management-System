@@ -554,3 +554,66 @@ describe('ReportsService scope consistency (real PostgreSQL)', () => {
     expect(result.portfoliosTotal).toBe(1);
   });
 });
+
+describe('ReportsService scope narrowing (real PostgreSQL)', () => {
+  it('shows a portfolio director only projects inside their portfolios', async () => {
+    const directorId = await createUser('director');
+    const authorId = await createUser('author');
+    const approverId = await createUser('approver');
+    await grantSystemRole(directorId, 'PORTFOLIO_DIRECTOR');
+    const portfolio = await prisma.portfolio.create({ data: { name: '政企线' } });
+    const other = await prisma.portfolio.create({ data: { name: '金融线' } });
+    await prisma.portfolioMembership.create({
+      data: { userId: directorId, portfolioId: portfolio.id },
+    });
+    const inside = await prisma.project.create({
+      data: { number: 'PRJ-IN', name: '集内项目', status: 'ACTIVE', portfolioId: portfolio.id },
+    });
+    const outside = await prisma.project.create({
+      data: { number: 'PRJ-OUT', name: '集外项目', status: 'ACTIVE', portfolioId: other.id },
+    });
+    for (const projectId of [inside.id, outside.id]) {
+      await addMember(authorId, projectId, ['MEMBER']);
+      await addMember(approverId, projectId, ['APPROVER']);
+      const log = await workLogs.createDraft(authorId, {
+        projectId,
+        workDate: '2026-11-04',
+        hours: 2,
+        completion: '内容',
+      });
+      await workLogs.submit(authorId, log.id, { approverId });
+    }
+
+    const summary = await reports.summary(directorId, range);
+    const rows = await reports.byProject(directorId, range);
+
+    expect(summary.scope).toBe('PROJECTS');
+    expect(summary.hours.total).toBe(2);
+    expect(summary.projects.inScope).toBe(1);
+    expect(rows.items.map((row) => row.projectId)).toEqual([inside.id]);
+  });
+
+  it('keeps the executive aggregation org-wide but still refuses drilldown', async () => {
+    const executiveId = await createUser('exec');
+    const authorId = await createUser('author');
+    const approverId = await createUser('approver');
+    await grantSystemRole(executiveId, 'EXECUTIVE');
+    const project = await createProject('PRJ-EXEC');
+    await addMember(authorId, project, ['MEMBER']);
+    await addMember(approverId, project, ['APPROVER']);
+    const log = await workLogs.createDraft(authorId, {
+      projectId: project,
+      workDate: '2026-11-04',
+      hours: 3,
+      completion: '内容',
+    });
+    await workLogs.submit(authorId, log.id, { approverId });
+
+    const summary = await reports.summary(executiveId, range);
+    expect(summary.hours.total).toBe(3);
+
+    await expect(reports.drilldown(executiveId, project, range)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+  });
+});

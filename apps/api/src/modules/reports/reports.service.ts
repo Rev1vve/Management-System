@@ -498,18 +498,61 @@ export class ReportsService {
     };
   }
 
+  /**
+   * 作用域（用户 2026-11-08 决定，方案 A）：
+   *  - 没有 `project:view` → 只看自己；
+   *  - 持 EXECUTIVE 系统角色 → 全部非归档项目的聚合（下钻仍需 `report:drilldown`）；
+   *  - 否则若属于某些项目集 → 这些项目集内的项目（项目总监口径）；
+   *  - 否则按项目成员关系 → 自己参与的项目（项目经理/审批人/观察者）；
+   *  - 都没有 → 退回"只看自己"。
+   * 任何分支都不包含 ARCHIVED 或软删项目，保证各报表能对上账。
+   */
   private async resolveScope(userId: string, known?: string[]): Promise<Scope> {
     const permissions = known ?? (await this.roles.listUserPermissions(userId));
     if (!permissions.includes(PERMISSIONS.PROJECT_VIEW)) {
       return { kind: 'OWN', userId };
     }
-    const projects = await this.prisma.project.findMany({
-      // 报表口径统一为"排除 ARCHIVED"：byProject / managed-projects / portfolios
-      // 必须能对上账，否则同一个项目在不同页面里一会出现一会消失。
-      where: { status: { not: 'ARCHIVED' }, deletedAt: null },
-      select: { id: true },
+
+    const roleKeys = await this.roles.listUserRoleKeys(userId);
+    const baseWhere = { status: { not: 'ARCHIVED' as const }, deletedAt: null };
+
+    if (roleKeys.includes('EXECUTIVE')) {
+      const projects = await this.prisma.project.findMany({
+        where: baseWhere,
+        select: { id: true },
+      });
+      return { kind: 'PROJECTS', projectIds: projects.map((project) => project.id) };
+    }
+
+    const portfolios = await this.prisma.portfolioMembership.findMany({
+      where: {
+        userId,
+        user: { status: 'ACTIVE', deletedAt: null },
+        portfolio: { status: { not: 'ARCHIVED' }, deletedAt: null },
+      },
+      select: { portfolioId: true },
     });
-    return { kind: 'PROJECTS', projectIds: projects.map((project) => project.id) };
+    if (portfolios.length > 0) {
+      const projects = await this.prisma.project.findMany({
+        where: { ...baseWhere, portfolioId: { in: portfolios.map((row) => row.portfolioId) } },
+        select: { id: true },
+      });
+      return { kind: 'PROJECTS', projectIds: projects.map((project) => project.id) };
+    }
+
+    const memberships = await this.prisma.projectMembership.findMany({
+      where: {
+        userId,
+        user: { status: 'ACTIVE', deletedAt: null },
+        project: baseWhere,
+      },
+      select: { projectId: true },
+    });
+    if (memberships.length > 0) {
+      return { kind: 'PROJECTS', projectIds: memberships.map((row) => row.projectId) };
+    }
+
+    return { kind: 'OWN', userId };
   }
 
   private logWhereFor(scope: Scope): Prisma.WorkLogWhereInput {
