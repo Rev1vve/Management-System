@@ -47,7 +47,7 @@ const summary = {
     decided: { approved: 6, returned: 2, rejected: 2 },
     returnRate: 0.2,
   },
-  projects: { inScope: 2 },
+  projects: { inScope: 2, withActivity: 1 },
 };
 
 const projectRow = {
@@ -103,6 +103,9 @@ describe('reports page', () => {
     expect(screen.getAllByText('退回率').length).toBeGreaterThan(0);
     expect(screen.getAllByText('20%').length).toBeGreaterThan(0);
     expect(screen.getByText(/Australia\/Melbourne/)).toBeInTheDocument();
+    // 两个数字分开显示：作用域大小 vs 本区间有记录的项目数。
+    expect(screen.getByText(/范围内项目 2 个/)).toBeInTheDocument();
+    expect(screen.getByText(/本区间有记录 1 个/)).toBeInTheDocument();
   });
 
   it('lists per-project rows and fetches the drilldown on demand', async () => {

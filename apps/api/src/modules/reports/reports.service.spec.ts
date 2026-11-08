@@ -68,6 +68,10 @@ function createPrismaMock() {
         .mockResolvedValue([{ portfolioId: 'pf-1', portfolio: { id: 'pf-1', name: '政企线' } }]),
       count: vi.fn().mockResolvedValue(1),
     },
+    portfolio: {
+      findMany: vi.fn().mockResolvedValue([{ id: 'pf-1', name: '政企线' }]),
+      count: vi.fn().mockResolvedValue(1),
+    },
   };
 }
 
@@ -76,9 +80,8 @@ function createService(
   permissions: string[] = [PERMISSIONS.PROJECT_VIEW],
 ) {
   const roles = {
-    listUserPermissions: vi.fn().mockResolvedValue(permissions),
-    // 默认按"高层"处理：作用域是全部非归档项目（方案 A）。
-    listUserRoleKeys: vi.fn().mockResolvedValue(['EXECUTIVE']),
+    // 默认按"高层"处理：作用域是全部非归档项目（方案 A 第一条分支）。
+    listUserPermissions: vi.fn().mockResolvedValue([...permissions, PERMISSIONS.REPORT_VIEW_ALL]),
   };
   return { service: new ReportsService(prisma as never, roles as never), roles };
 }
@@ -381,7 +384,8 @@ describe('ReportsService.drilldown', () => {
       { portfolioId: 'pf-1', portfolio: { id: 'pf-1', name: '政企线' } },
     ]);
     prisma.project.findMany.mockResolvedValue([{ id: 'project-1', portfolioId: 'pf-1' }]);
-    const { service } = createService(prisma, [PERMISSIONS.PORTFOLIO_VIEW]);
+    const roles = { listUserPermissions: vi.fn().mockResolvedValue([PERMISSIONS.PORTFOLIO_VIEW]) };
+    const service = new ReportsService(prisma as never, roles as never);
 
     const result = await service.portfolios('director-1', { from: '2026-11-01', to: '2026-11-07' });
 
@@ -400,7 +404,8 @@ describe('ReportsService.drilldown', () => {
   it('returns nothing when the caller belongs to no portfolio', async () => {
     const prisma = createPrismaMock();
     prisma.portfolioMembership.findMany.mockResolvedValue([]);
-    const { service } = createService(prisma);
+    const roles = { listUserPermissions: vi.fn().mockResolvedValue([]) };
+    const service = new ReportsService(prisma as never, roles as never);
 
     const result = await service.portfolios('exec-1', { from: '2026-11-01', to: '2026-11-07' });
 
@@ -432,9 +437,14 @@ describe('ReportsService.drilldown', () => {
 
   it('scopes the cross-project report set to non-archived projects', async () => {
     const prisma = createPrismaMock();
-    const { service } = createService(prisma, [PERMISSIONS.PROJECT_VIEW]);
+    const roles = {
+      listUserPermissions: vi
+        .fn()
+        .mockResolvedValue([PERMISSIONS.PROJECT_VIEW, PERMISSIONS.REPORT_VIEW_ALL]),
+    };
+    const service = new ReportsService(prisma as never, roles as never);
 
-    await service.byProject('pm-1', { from: '2026-11-01', to: '2026-11-07' });
+    await service.byProject('exec-1', { from: '2026-11-01', to: '2026-11-07' });
 
     expect(prisma.project.findMany).toHaveBeenCalledWith({
       where: { status: { not: 'ARCHIVED' }, deletedAt: null },
@@ -446,7 +456,8 @@ describe('ReportsService.drilldown', () => {
     const prisma = createPrismaMock();
     prisma.portfolioMembership.count.mockResolvedValue(2);
     prisma.portfolioMembership.findMany.mockResolvedValue([]);
-    const { service } = createService(prisma);
+    const roles = { listUserPermissions: vi.fn().mockResolvedValue([]) };
+    const service = new ReportsService(prisma as never, roles as never);
 
     const result = await service.portfolios('director-1', {
       from: '2026-11-01',
@@ -474,7 +485,6 @@ describe('ReportsService.drilldown', () => {
       listUserPermissions: vi
         .fn()
         .mockResolvedValue([PERMISSIONS.PROJECT_VIEW, PERMISSIONS.PORTFOLIO_VIEW]),
-      listUserRoleKeys: vi.fn().mockResolvedValue(['PORTFOLIO_DIRECTOR']),
     };
     const service = new ReportsService(prisma as never, roles as never);
 
@@ -501,7 +511,6 @@ describe('ReportsService.drilldown', () => {
       listUserPermissions: vi
         .fn()
         .mockResolvedValue([PERMISSIONS.PROJECT_VIEW, PERMISSIONS.PROJECT_MANAGE]),
-      listUserRoleKeys: vi.fn().mockResolvedValue(['PROJECT_MANAGER']),
     };
     const service = new ReportsService(prisma as never, roles as never);
 
@@ -512,5 +521,39 @@ describe('ReportsService.drilldown', () => {
         where: expect.objectContaining({ projectId: { in: ['project-7'] } }),
       }),
     );
+  });
+
+  it('reports both the scope size and the projects that had activity', async () => {
+    const prisma = createPrismaMock();
+    const { service } = createService(prisma);
+
+    const summary = await service.summary('pm-1', { from: '2026-11-01', to: '2026-11-07' });
+
+    // 作用域 2 个项目，区间内只有 project-1 / project-2 有工时；两个字段分开给，
+    // 页面才能解释"范围内 N 个、本区间有记录 M 个"。
+    expect(summary.projects.inScope).toBe(2);
+    expect(summary.projects.withActivity).toBe(2);
+  });
+
+  it('lets an org-wide viewer aggregate every portfolio, not just memberships', async () => {
+    const prisma = createPrismaMock();
+    prisma.portfolio.findMany.mockResolvedValue([
+      { id: 'pf-1', name: '政企线' },
+      { id: 'pf-2', name: '金融线' },
+    ]);
+    prisma.portfolio.count.mockResolvedValue(2);
+    prisma.project.findMany.mockResolvedValue([{ id: 'project-1', portfolioId: 'pf-1' }]);
+    const roles = {
+      listUserPermissions: vi
+        .fn()
+        .mockResolvedValue([PERMISSIONS.PROJECT_VIEW, PERMISSIONS.REPORT_VIEW_ALL]),
+    };
+    const service = new ReportsService(prisma as never, roles as never);
+
+    const result = await service.portfolios('exec-1', { from: '2026-11-01', to: '2026-11-07' });
+
+    expect(prisma.portfolioMembership.findMany).not.toHaveBeenCalled();
+    expect(result.portfoliosTotal).toBe(2);
+    expect(result.items.map((row) => row.portfolioId)).toEqual(['pf-1']);
   });
 });

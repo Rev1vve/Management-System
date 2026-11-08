@@ -27,6 +27,7 @@ export const PERMISSIONS = {
   PORTFOLIO_MANAGE: 'portfolio:manage',
   REPORT_VIEW: 'report:view',
   REPORT_DRILLDOWN: 'report:drilldown',
+  REPORT_VIEW_ALL: 'report:view-all',
   APPROVAL_DECIDE: 'approval:decide',
 } as const;
 
@@ -44,6 +45,7 @@ export const PERMISSION_DESCRIPTIONS: Record<PermissionKey, string> = {
   [PERMISSIONS.PORTFOLIO_MANAGE]: '管理所属项目集',
   [PERMISSIONS.REPORT_VIEW]: '查看报表',
   [PERMISSIONS.REPORT_DRILLDOWN]: '报表下钻（查看客户/个人级明细）',
+  [PERMISSIONS.REPORT_VIEW_ALL]: '查看全组织聚合报表',
   [PERMISSIONS.APPROVAL_DECIDE]: '审批决策',
 };
 
@@ -118,7 +120,12 @@ export const ROLE_DEFINITIONS: readonly RoleDefinition[] = [
     name: '高层领导',
     description: '高层级跨项目查看与报表',
     requiresMfa: true,
-    permissions: [PERMISSIONS.PROJECT_VIEW, PERMISSIONS.PORTFOLIO_VIEW, PERMISSIONS.REPORT_VIEW],
+    permissions: [
+      PERMISSIONS.PROJECT_VIEW,
+      PERMISSIONS.PORTFOLIO_VIEW,
+      PERMISSIONS.REPORT_VIEW,
+      PERMISSIONS.REPORT_VIEW_ALL,
+    ],
   },
 ];
 

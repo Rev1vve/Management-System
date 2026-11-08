@@ -617,3 +617,84 @@ describe('ReportsService scope narrowing (real PostgreSQL)', () => {
     );
   });
 });
+
+describe('ReportsService reconciliation (real PostgreSQL)', () => {
+  it('separates the scope size from the projects that actually have activity', async () => {
+    const managerId = await createUser('manager');
+    const authorId = await createUser('author');
+    const approverId = await createUser('approver');
+    await grantSystemRole(managerId, 'PROJECT_MANAGER');
+    const busy = await createProject('PRJ-BUSY');
+    const idle = await createProject('PRJ-IDLE');
+    await addMember(managerId, busy, ['PROJECT_MANAGER']);
+    await addMember(managerId, idle, ['PROJECT_MANAGER']);
+    await addMember(authorId, busy, ['MEMBER']);
+    await addMember(approverId, busy, ['APPROVER']);
+    const log = await workLogs.createDraft(authorId, {
+      projectId: busy,
+      workDate: '2026-11-03',
+      hours: 2,
+      completion: '内容',
+    });
+    await workLogs.submit(authorId, log.id, { approverId });
+
+    const summary = await reports.summary(managerId, range);
+    const rows = await reports.byProject(managerId, range);
+
+    // 作用域 2 个项目：本区间只有 1 个有工时，表格也只有 1 行。
+    expect(summary.projects.inScope).toBe(2);
+    expect(summary.projects.withActivity).toBe(1);
+    expect(rows.items).toHaveLength(summary.projects.withActivity);
+  });
+
+  it('refuses archived detail rows even for an owner-scope viewer', async () => {
+    const authorId = await createUser('author');
+    const approverId = await createUser('approver');
+    const project = await createProject('PRJ-ARCH');
+    await addMember(authorId, project, ['MEMBER']);
+    await addMember(approverId, project, ['APPROVER']);
+    const log = await workLogs.createDraft(authorId, {
+      projectId: project,
+      workDate: '2026-11-03',
+      hours: 6,
+      completion: '内容',
+    });
+    await workLogs.submit(authorId, log.id, { approverId });
+    await prisma.project.update({ where: { id: project }, data: { status: 'ARCHIVED' } });
+
+    const summary = await reports.summary(authorId, range);
+    expect(summary.hours.total).toBe(0);
+
+    // 汇总已排除归档项目，明细也必须一致（之前这里还会返回 6h）。
+    await expect(reports.drilldown(authorId, project, range)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+  });
+
+  it('lets an executive see portfolio rows beyond their own memberships', async () => {
+    const executiveId = await createUser('exec');
+    const authorId = await createUser('author');
+    const approverId = await createUser('approver');
+    await grantSystemRole(executiveId, 'EXECUTIVE');
+    const portfolio = await prisma.portfolio.create({ data: { name: '政企线' } });
+    const project = await prisma.project.create({
+      data: { number: 'PRJ-PF', name: '项目', status: 'ACTIVE', portfolioId: portfolio.id },
+    });
+    await addMember(authorId, project.id, ['MEMBER']);
+    await addMember(approverId, project.id, ['APPROVER']);
+    const log = await workLogs.createDraft(authorId, {
+      projectId: project.id,
+      workDate: '2026-11-03',
+      hours: 4,
+      completion: '内容',
+    });
+    await workLogs.submit(authorId, log.id, { approverId });
+
+    const result = await reports.portfolios(executiveId, range);
+
+    expect(result.items).toEqual([
+      expect.objectContaining({ portfolioId: portfolio.id, hours: 4 }),
+    ]);
+    expect(result.portfoliosTotal).toBe(1);
+  });
+});

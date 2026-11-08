@@ -48,7 +48,7 @@ const summary = {
     decided: { approved: 1, returned: 1, rejected: 0 },
     returnRate: 0.5,
   },
-  projects: { inScope: 1 },
+  projects: { inScope: 1, withActivity: 1 },
 };
 
 beforeEach(() => {

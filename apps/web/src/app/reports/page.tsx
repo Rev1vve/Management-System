@@ -114,7 +114,8 @@ export default function ReportsPage() {
             {summary.data.range.from} 至 {summary.data.range.to}
             {summary.data.scope === 'OWN' ? ' · 仅本人数据' : ' · 授权项目汇总'}
             {' · '}
-            范围内项目 {summary.data.projects.inScope} 个{' · '}
+            范围内项目 {summary.data.projects.inScope} 个 · 本区间有记录{' '}
+            {summary.data.projects.withActivity} 个{' · '}
             待审为实时值（快照 {summary.data.approvals.pendingAsOf}）
           </p>
           <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

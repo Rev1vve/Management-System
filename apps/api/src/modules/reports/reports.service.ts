@@ -72,7 +72,7 @@ export class ReportsService {
           // 日期过滤下推到 SQL：不要把作用域内全部历史日志都拉进内存。
           currentVersion: { workDate: { gte: range.fromDate, lt: range.toDateExclusive } },
         },
-        select: { currentVersion: { select: { hours: true } } },
+        select: { projectId: true, currentVersion: { select: { hours: true } } },
         take: REPORT_ROW_LIMIT + 1,
       }),
       this.prisma.approvalRequest.count({
@@ -139,7 +139,14 @@ export class ReportsService {
         // 退回率 = 退回 / 已决策；没有决策时给 0 而不是 NaN。
         returnRate: decidedTotal === 0 ? 0 : decided.returned / decidedTotal,
       },
-      projects: { inScope: projectCount },
+      projects: {
+        // 作用域里的项目总数（与区间无关）。
+        inScope: projectCount,
+        // 区间内真的有工时/决策的项目数——与 byProject 的行数可对账。
+        withActivity: new Set(
+          currentLogs.map((log) => (log as { projectId?: string }).projectId ?? ''),
+        ).size,
+      },
     };
   }
 
@@ -219,9 +226,24 @@ export class ReportsService {
   async portfolios(userId: string, input: RangeInput) {
     const range = this.resolveRange(input);
     // 归属总数（含已归档的项目集）用于区分"没有归属"与"归属的集都归档了"。
-    const allMemberships = await this.prisma.portfolioMembership.count({
-      where: { userId, user: { status: 'ACTIVE', deletedAt: null } },
-    });
+    const permissions = await this.roles.listUserPermissions(userId);
+    const viewAll = permissions.includes(PERMISSIONS.REPORT_VIEW_ALL);
+
+    // 有全局聚合能力的人（高层）在所有项目集上汇总；其他人只看自己所属的项目集。
+    const allMemberships = viewAll
+      ? await this.prisma.portfolio.count({
+          where: { status: { not: 'ARCHIVED' }, deletedAt: null },
+        })
+      : await this.prisma.portfolioMembership.count({
+          where: { userId, user: { status: 'ACTIVE', deletedAt: null } },
+        });
+    if (viewAll) {
+      const allPortfolios = await this.prisma.portfolio.findMany({
+        where: { status: { not: 'ARCHIVED' }, deletedAt: null },
+        select: { id: true, name: true },
+      });
+      return this.aggregatePortfolios(range, allPortfolios, allMemberships);
+    }
     const memberships = await this.prisma.portfolioMembership.findMany({
       where: {
         userId,
@@ -231,48 +253,54 @@ export class ReportsService {
       },
       select: { portfolioId: true, portfolio: { select: { id: true, name: true } } },
     });
-    if (memberships.length === 0) {
+    return this.aggregatePortfolios(
+      range,
+      memberships.map((membership) => membership.portfolio),
+      allMemberships,
+    );
+  }
+
+  private async aggregatePortfolios(
+    range: ResolvedRange,
+    portfolios: Array<{ id: string; name: string }>,
+    portfoliosTotal: number,
+  ) {
+    if (portfolios.length === 0) {
       return {
         range: { from: range.from, to: range.to, timezone: range.timezone },
         items: [],
-        portfoliosTotal: allMemberships,
+        portfoliosTotal,
         truncated: false,
         truncatedReasons: [],
         limit: REPORT_ROW_LIMIT,
       };
     }
-    const portfolioIds = memberships.map((membership) => membership.portfolioId);
-    const names = new Map(
-      memberships.map((membership) => [membership.portfolioId, membership.portfolio.name]),
-    );
-
+    const names = new Map(portfolios.map((portfolio) => [portfolio.id, portfolio.name]));
     const projects = await this.prisma.project.findMany({
       where: {
-        portfolioId: { in: portfolioIds },
+        portfolioId: { in: portfolios.map((portfolio) => portfolio.id) },
         status: { not: 'ARCHIVED' },
         deletedAt: null,
       },
       select: { id: true, portfolioId: true },
     });
-    const projectToPortfolio = new Map(
-      projects.map((project) => [project.id, project.portfolioId ?? '']),
-    );
     if (projects.length === 0) {
       return {
         range: { from: range.from, to: range.to, timezone: range.timezone },
         items: [],
-        portfoliosTotal: allMemberships,
+        portfoliosTotal,
         truncated: false,
         truncatedReasons: [],
         limit: REPORT_ROW_LIMIT,
       };
     }
-
+    const projectToPortfolio = new Map(
+      projects.map((project) => [project.id, project.portfolioId ?? '']),
+    );
     const result = await this.aggregateProjects(range, {
       projectId: { in: projects.map((project) => project.id) },
       deletedAt: null,
     });
-
     const grouped = new Map<
       string,
       {
@@ -312,7 +340,6 @@ export class ReportsService {
       target.returned += row.returned;
       target.rejected += row.rejected;
     }
-
     const items = [...grouped.values()]
       .map((row) => {
         const decidedTotal = row.approved + row.returned + row.rejected;
@@ -323,11 +350,10 @@ export class ReportsService {
         };
       })
       .sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name));
-
     return {
       range: { from: range.from, to: range.to, timezone: range.timezone },
       items,
-      portfoliosTotal: allMemberships,
+      portfoliosTotal,
       truncated: result.truncated,
       truncatedReasons: result.truncatedReasons,
       limit: result.limit,
@@ -459,6 +485,7 @@ export class ReportsService {
         workLog: {
           projectId: filter.projectId,
           deletedAt: null,
+          project: { status: { not: 'ARCHIVED' }, deletedAt: null },
           ...(filter.authorId ? { authorId: filter.authorId } : {}),
         },
       },
@@ -513,10 +540,10 @@ export class ReportsService {
       return { kind: 'OWN', userId };
     }
 
-    const roleKeys = await this.roles.listUserRoleKeys(userId);
     const baseWhere = { status: { not: 'ARCHIVED' as const }, deletedAt: null };
 
-    if (roleKeys.includes('EXECUTIVE')) {
+    // 用能力而不是角色名判定：角色 key 是可变的字符串，权限才是受审计的授权轴。
+    if (permissions.includes(PERMISSIONS.REPORT_VIEW_ALL)) {
       const projects = await this.prisma.project.findMany({
         where: baseWhere,
         select: { id: true },
@@ -537,7 +564,10 @@ export class ReportsService {
         where: { ...baseWhere, portfolioId: { in: portfolios.map((row) => row.portfolioId) } },
         select: { id: true },
       });
-      return { kind: 'PROJECTS', projectIds: projects.map((project) => project.id) };
+      // 项目集存在但没有在建项目时继续往下走，避免"明明在管项目却报表全空"。
+      if (projects.length > 0) {
+        return { kind: 'PROJECTS', projectIds: projects.map((project) => project.id) };
+      }
     }
 
     const memberships = await this.prisma.projectMembership.findMany({
@@ -565,7 +595,11 @@ export class ReportsService {
         project: { status: { not: 'ARCHIVED' as const }, deletedAt: null },
       };
     }
-    return { projectId: { in: scope.projectIds }, deletedAt: null };
+    return {
+      projectId: { in: scope.projectIds },
+      deletedAt: null,
+      project: { status: { not: 'ARCHIVED' as const }, deletedAt: null },
+    };
   }
 
   private resolveRange(input: RangeInput): ResolvedRange {

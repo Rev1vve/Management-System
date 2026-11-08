@@ -28,7 +28,7 @@ vi.mock('@/lib/api', async (importOriginal) => {
           decided: { approved: 0, returned: 0, rejected: 0 },
           returnRate: 0,
         },
-        projects: { inScope: 0 },
+        projects: { inScope: 0, withActivity: 0 },
       }),
       listMyWorkLogs: vi.fn().mockResolvedValue({ items: [], page: 1, pageSize: 5, total: 0 }),
       listApprovals: vi.fn().mockResolvedValue({ items: [], page: 1, pageSize: 3, total: 0 }),

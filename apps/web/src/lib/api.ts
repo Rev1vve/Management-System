@@ -148,7 +148,7 @@ export interface ReportSummary {
     decided: { approved: number; returned: number; rejected: number };
     returnRate: number;
   };
-  projects: { inScope: number };
+  projects: { inScope: number; withActivity: number };
 }
 
 export interface ReportProjectRow {
