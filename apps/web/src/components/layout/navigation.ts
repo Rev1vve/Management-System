@@ -1,6 +1,7 @@
 import {
   BarChart3,
   Bell,
+  ShieldCheck,
   BriefcaseBusiness,
   ClipboardCheck,
   ContactRound,
@@ -47,12 +48,13 @@ const ITEMS: Record<string, NavigationItem> = {
   },
   reports: { href: '/reports', label: '报表', icon: BarChart3, group: 'management' },
   users: { href: '/admin/users', label: '用户管理', icon: UsersRound, group: 'administration' },
+  audit: { href: '/admin/audit', label: '审计查询', icon: ShieldCheck, group: 'administration' },
   settings: { href: '/admin/settings', label: '系统设置', icon: Settings, group: 'administration' },
   profile: { href: '/profile', label: '个人资料', icon: BriefcaseBusiness, group: 'management' },
 };
 
 const ROLE_ITEM_KEYS: Record<SystemRoleKey, readonly string[]> = {
-  ADMIN: ['home', 'notifications', 'users', 'settings', 'profile'],
+  ADMIN: ['home', 'notifications', 'users', 'audit', 'settings', 'profile'],
   EMPLOYEE: [
     'home',
     'customers',
@@ -114,6 +116,7 @@ export function getNavigationItems(roles: readonly SystemRoleKey[]): NavigationI
     'portfolioOverview',
     'reports',
     'users',
+    'audit',
     'settings',
     'profile',
   ];

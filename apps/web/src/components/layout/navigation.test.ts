@@ -48,4 +48,15 @@ describe('getNavigationItems', () => {
     const hrefs = getNavigationItems(['PORTFOLIO_DIRECTOR']).map((item) => item.href);
     expect(hrefs).toContain('/portfolio-overview');
   });
+
+  it('gives administrators the audit query entry', () => {
+    const hrefs = getNavigationItems(['ADMIN']).map((item) => item.href);
+    expect(hrefs).toContain('/admin/audit');
+  });
+
+  it('keeps the audit entry away from non-administrators', () => {
+    for (const role of ['EMPLOYEE', 'APPROVER', 'PROJECT_MANAGER', 'PORTFOLIO_DIRECTOR'] as const) {
+      expect(getNavigationItems([role]).map((item) => item.href)).not.toContain('/admin/audit');
+    }
+  });
 });

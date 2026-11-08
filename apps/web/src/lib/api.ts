@@ -189,6 +189,38 @@ export interface PortfolioRow {
   returnRate: number;
 }
 
+export interface AdminUserRow {
+  id: string;
+  account: string;
+  name: string;
+  workEmail: string;
+  status: 'ACTIVE' | 'SUSPENDED' | 'INVITED' | 'ARCHIVED';
+  mfaEnabled: boolean;
+  createdAt: string;
+  roles: Array<{ key: string; name: string }>;
+}
+
+export interface AdminRole {
+  key: string;
+  name: string;
+  description: string | null;
+  requiresMfa: boolean;
+  permissions: string[];
+}
+
+export interface AuditRow {
+  id: string;
+  actorId: string | null;
+  action: string;
+  resourceType: string;
+  resourceId: string | null;
+  projectId: string | null;
+  result: string;
+  summary: string | null;
+  createdAt: string;
+  actor: { id: string; name: string } | null;
+}
+
 export type WorkLogStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'RETURNED' | 'REJECTED';
 export type WorkLogVisibility = 'PRIVATE' | 'PROJECT_VISIBLE';
 
@@ -410,6 +442,26 @@ function reportRangeQuery(q: { from?: string | undefined; to?: string | undefine
   return query ? `?${query}` : '';
 }
 
+function auditQuery(q: {
+  page: number;
+  pageSize: number;
+  actorId?: string | undefined;
+  action?: string | undefined;
+  resourceType?: string | undefined;
+  from?: string | undefined;
+  to?: string | undefined;
+}): string {
+  const params = new URLSearchParams({
+    page: String(q.page),
+    pageSize: String(q.pageSize),
+  });
+  for (const key of ['actorId', 'action', 'resourceType', 'from', 'to'] as const) {
+    const value = q[key];
+    if (value) params.set(key, value);
+  }
+  return `?${params.toString()}`;
+}
+
 export const api = {
   listCustomers: (q: ListQuery) =>
     request<PaginatedResponse<CustomerSummary>>(listPath('customers', q)),
@@ -594,6 +646,33 @@ export const api = {
       truncated: boolean;
       limit: number;
     }>(`/reports/projects/${id(projectId)}/work-logs${reportRangeQuery(q)}`),
+
+  listAdminUsers: (q: { page: number; pageSize: number; search?: string | undefined }) =>
+    request<PaginatedResponse<AdminUserRow>>(
+      `/admin/users?page=${encodeURIComponent(String(q.page))}&pageSize=${encodeURIComponent(
+        String(q.pageSize),
+      )}${q.search ? `&search=${encodeURIComponent(q.search)}` : ''}`,
+    ),
+  setUserStatus: (userId: string, status: AdminUserRow['status']) =>
+    request<{ id: string; status: string }>(
+      `/admin/users/${id(userId)}/status`,
+      json('PATCH', { status }),
+    ),
+  setUserRoles: (userId: string, roles: string[]) =>
+    request<{ id: string; roles: string[] }>(
+      `/admin/users/${id(userId)}/roles`,
+      json('PUT', { roles }),
+    ),
+  listAdminRoles: () => request<AdminRole[]>('/admin/roles'),
+  listAudit: (q: {
+    page: number;
+    pageSize: number;
+    actorId?: string | undefined;
+    action?: string | undefined;
+    resourceType?: string | undefined;
+    from?: string | undefined;
+    to?: string | undefined;
+  }) => request<PaginatedResponse<AuditRow> & { timezone: string }>(`/admin/audit${auditQuery(q)}`),
   listApprovals: (q: { page: number; pageSize: number }) =>
     request<PaginatedResponse<ApprovalListItem>>(
       `/approvals?page=${encodeURIComponent(String(q.page))}&pageSize=${encodeURIComponent(String(q.pageSize))}`,
