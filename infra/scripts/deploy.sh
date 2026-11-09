@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# 任务 13：把生产编排部署到目标机（Ubuntu 24.04 / x86_64）。
+# 任务 13：把生产编排部署到目标机（Ubuntu x86_64；已在 26.04 + Docker 29 上验证前提）。
 #
 # 设计要点（对应 review-46 的发现）：
 #  - 直接使用仓库里的 infra/compose.prod.yml：该文件的 build.context 是 `..`，
@@ -100,6 +100,8 @@ export WEB_IMAGE="project-operations-web:$SHA"
 export API_TOOLS_IMAGE="project-operations-api-tools:$SHA"
 
 log "仓库 $SOURCE 提交 $SHA"
+# 把实测环境写进日志：版本差异是最难远程排查的一类问题。
+log "环境：$(. /etc/os-release 2>/dev/null && printf '%s %s' "$ID" "$VERSION_ID") / $(uname -m) / $(docker --version | cut -d, -f1) / $(docker compose version --short 2>/dev/null || echo 'compose ?')"
 
 run install -d -m 755 "$DEPLOY_ROOT/releases" "$DEPLOY_ROOT/shared/env" "$DEPLOY_ROOT/shared/secrets"
 run install -d -m 755 "$RELEASE_DIR"

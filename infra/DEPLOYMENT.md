@@ -1,16 +1,17 @@
-# 任务 13：生产部署检查单（Ubuntu 24.04 / x86_64）
+# 任务 13：生产部署检查单（Ubuntu 26.04 / x86_64）
 
-目标机 = 原迁移来源那台 Ubuntu。已确认：`x86_64`、`Ubuntu 24.04`、Tailscale 未安装、2 TB 磁盘。
+目标机 = 原迁移来源那台 Ubuntu。实测：`x86_64`、`Ubuntu 26.04`、Docker 29.1.3、Compose 2.40.3、
+根分区 1.9 TB（可用 1.6 TB）、Tailscale 未安装。
 部署根目录取 `/opt/project-operations`（脚本可用 `--deploy-root` 覆盖）。
 
 镜像按提交号打 tag（`project-operations-{api,web,api-tools}:<sha>`），回滚才有意义。
 
 ## 0. 前置
 
-- [ ] `uname -m` = `x86_64`，`lsb_release -rs` = `24.04`
-- [ ] `docker --version` ≥ 27，`docker compose version` 为 v2
+- [ ] `uname -m` = `x86_64`；`lsb_release -rs` 记下来（当前 26.04）
+- [ ] `docker --version` ≥ 27（当前 29.1.3），`docker compose version` 为 v2（当前 2.40.3）
 - [ ] `sudo` 可用；能访问 Docker Hub 与 Ubuntu 源
-- [ ] 磁盘：`/opt/project-operations` 与备份同盘时，给 `backups/` 单独限额（建议 ≥ 200 GB）
+- [ ] 磁盘：根分区 1.9 TB、可用 1.6 TB，`backups/` 建议单独限额 ≥ 200 GB
 - [ ] tailnet 已开启 **HTTPS Certificates** 与 **MagicDNS**（否则 `tailscale serve` 拿不到证书）
 
 ## 1. 目录与密钥（用 root 一次性创建，避免普通用户重定向把 mode 改坏）
