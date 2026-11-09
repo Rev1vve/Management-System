@@ -163,6 +163,8 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
     networks:
       - frontend
+      # 只让入口同时挂在一个普通 bridge 上：internal 网络里的容器无法被宿主端口发布。
+      - ingress
     depends_on:
       api:
         condition: service_started
@@ -197,6 +199,11 @@ services:
       - no-new-privileges:true
 
 networks:
+  ingress:
+    driver: bridge
+    driver_opts:
+      # 入口只承接入站发布，不需要出站 NAT：关掉 masquerade，缩小被当成跳板的可能。
+      com.docker.network.bridge.enable_ip_masquerade: 'false'
   backend:
     internal: true
   frontend:

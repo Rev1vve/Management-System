@@ -61,7 +61,9 @@ sudo /srv/Management-System/infra/scripts/tailscale-serve.sh --check
 - [ ] **重启自恢复**：`sudo reboot` 后 3 分钟内 `/api/v1/health` 回到 200，`tailscale serve status` 仍有配置
 - [ ] **恢复演练**：见下一节
 
-## 5. 备份与恢复演练（备份脚本要用生产编排与环境文件）
+## 5. 备份与恢复演练
+
+### 5.1 备份（生产编排 + 生产 env）
 
 ```bash
 COMPOSE_FILE=/srv/Management-System/infra/compose.prod.yml
@@ -71,12 +73,77 @@ sudo env COMPOSE_FILE=$COMPOSE_FILE ENV_FILE=$ENV_FILE \
   /srv/Management-System/infra/scripts/backup.sh --backup-dir /opt/project-operations/backups
 sudo env COMPOSE_FILE=$COMPOSE_FILE ENV_FILE=$ENV_FILE \
   /srv/Management-System/infra/scripts/backup-attachments.sh --backup-dir /opt/project-operations/backups
-sudo env COMPOSE_FILE=$COMPOSE_FILE ENV_FILE=$ENV_FILE \
-  /srv/Management-System/infra/scripts/verify-backup-restore.sh --backup-dir /opt/project-operations/backups
 ```
 
-- [ ] 演练输出 PASS，临时库已清理
-- [ ] 记录耗时（RTO 依据）：`time sudo env ... verify-backup-restore.sh ...`
+定时备份由 systemd 负责（`project-operations-backup.timer`，每天 03:00 Australia/Melbourne，
+`Persistent=true`，产物在 `backups/scheduled/<UTC>-<随机>/`，两份 `.sha256` 校验通过才写 `SUCCESS`）。
+源码在 `infra/systemd/`，安装脚本 `infra/scripts/install-backup-timer.sh`。
+
+```bash
+systemctl list-timers project-operations-backup.timer --all --no-pager
+systemctl show project-operations-backup.service -p Result -p ExecMainStatus
+sudo journalctl -u project-operations-backup.service -n 50 --no-pager
+```
+
+### 5.2 恢复演练：**不要在生产和生产项目名下做**
+
+`verify-backup-restore.sh` 有两道硬约束，别去绕：
+
+1. `require_disposable_project` 要求 Compose 项目名包含 `verify`，生产项目名会被直接拒绝；
+2. 它会往**源库**写一个 `infra_verify` schema 再逐级清理，所以它压根不是"完全不动源库"。
+
+生产数据的恢复演练要另起一套一次性栈，把生产备份**恢复到那里**。项目名必须是显式的验证名，
+并且每一步之前都断言它——`prod.env` 是手工维护的，靠 sed 改名一旦没命中就会落回生产项目名。
+
+```bash
+COMPOSE=/srv/Management-System/infra/compose.prod.yml
+DRILL_ENV=/opt/project-operations/shared/env/drill.env
+DRILL_PROJECT=project-operations-verify
+
+# 1) 生成演练 env：先复制，再"追加"覆盖值（追加在文件末尾，一定生效；不依赖 sed 命中）
+sudo install -m 640 -o root -g 10001 /opt/project-operations/shared/env/prod.env "$DRILL_ENV"
+printf 'COMPOSE_PROJECT_NAME=%s\n' "$DRILL_PROJECT" | sudo tee -a "$DRILL_ENV" >/dev/null
+
+# 2) 断言项目名就是验证项目；不是就停下，绝不继续
+actual="$(sudo docker compose -f "$COMPOSE" --env-file "$DRILL_ENV" config --format json \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
+[ "$actual" = "$DRILL_PROJECT" ] || { echo "拒绝继续：项目名是 $actual"; exit 1; }
+
+# 3) 取最新一次定时备份（去掉尾斜杠后再取样例名，避免展开成空串）
+RUN_DIR=$(sudo ls -1d /opt/project-operations/backups/scheduled/*/ | tail -1)
+RUN_DIR="${RUN_DIR%/}"
+DUMP=$(sudo ls -1 "$RUN_DIR" | grep '\.dump$' | head -1)
+[ -n "$DUMP" ] || { echo "该目录没有 dump：$RUN_DIR"; exit 1; }
+
+# 4) 一次性栈跑迁移（只影响验证项目自己的卷）
+sudo docker compose -f "$COMPOSE" --env-file "$DRILL_ENV" --profile tools \
+  run --rm api-tools pnpm db:migrate:deploy
+
+# 5) 计时：把生产 dump 恢复到这套一次性栈
+time sudo /srv/Management-System/infra/scripts/restore.sh \
+  --compose-file "$COMPOSE" --env-file "$DRILL_ENV" \
+  "$RUN_DIR/$DUMP" \
+  project_operations_restore_verify
+
+# 6) 校验关键计数（对照生产只读计数）
+sudo docker exec "${DRILL_PROJECT}-postgres-1" psql -U project_operations -d project_operations_restore_verify \
+  -c 'select (select count(*) from users) as users, (select count(*) from projects) as projects, (select count(*) from work_logs) as work_logs;'
+
+# 7) 清理：删之前再断言一次项目名
+actual="$(sudo docker compose -f "$COMPOSE" --env-file "$DRILL_ENV" config --format json \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
+[ "$actual" = "$DRILL_PROJECT" ] || { echo "拒绝销毁：项目名是 $actual"; exit 1; }
+sudo docker compose -f "$COMPOSE" --env-file "$DRILL_ENV" down --volumes
+sudo rm -f "$DRILL_ENV"
+```
+
+- [ ] 第 2、7 步的断言都打印出 `project-operations-verify`，没有出现生产项目名
+- [ ] 第 5 步有真实耗时（这才是 RTO 数据；备份耗时不是）
+- [ ] 第 6 步计数与生产一致
+- [ ] 第 7 步后 `docker ps -a | grep verify` 无残留
+- [ ] **绝不**对生产项目执行 `docker compose down --volumes`
+
+> 注：`infra/tests` 的契约测试与开发栈仍用 `verify-backup-restore.sh`（项目名含 verify），那里可以放心跑。
 
 ## 6. 回滚
 

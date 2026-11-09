@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Project Operations backup at 03:00 Melbourne time
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 Australia/Melbourne
+Persistent=true
+AccuracySec=1min
+Unit=project-operations-backup.service
+
+[Install]
+WantedBy=timers.target

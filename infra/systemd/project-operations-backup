@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# 每日备份的执行体（由 project-operations-backup.service 调用）。
+# 设计要点：
+#  - flock 防止定时器与手动触发并发；
+#  - 每次备份落在独立目录，先数据库 dump 再附件 tar.gz，两份校验都通过才写 SUCCESS；
+#  - 失败写 FAILED 并以非零退出，不删除部分产物，便于事后取证；
+#  - 不自动清理旧备份，保留策略另行决定；
+#  - 这是两份独立的在线备份，不是跨数据库/附件的一致快照（见 SUCCESS 文件里的 consistency 行）。
+
+umask 077
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export COMPOSE_FILE="${COMPOSE_FILE:-/srv/Management-System/infra/compose.prod.yml}"
+export ENV_FILE="${ENV_FILE:-/opt/project-operations/shared/env/prod.env}"
+
+scripts="${SCRIPTS_DIR:-/srv/Management-System/infra/scripts}"
+backup_root="${BACKUP_ROOT:-/opt/project-operations/backups/scheduled}"
+lock_file="${LOCK_FILE:-/run/lock/project-operations-backup.lock}"
+
+exec 9>"$lock_file"
+flock -n 9 || { echo '[backup] 已有备份在运行，本次退出' >&2; exit 1; }
+
+install -d -m 0700 "$backup_root"
+run_dir=$(mktemp -d "$backup_root/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
+started=$(date -u +%FT%TZ)
+
+failed() {
+  result=$?
+  if ((result != 0)); then
+    printf 'status=FAILED\nexit_code=%s\nfinished_utc=%s\n' \
+      "$result" "$(date -u +%FT%TZ)" > "$run_dir/FAILED"
+    echo "[backup] 失败：$run_dir；用 journalctl -u project-operations-backup.service 查看" >&2
+  fi
+}
+trap failed EXIT
+
+printf '[backup] 开始：%s\n' "$run_dir"
+"$scripts/backup.sh" --compose-file "$COMPOSE_FILE" --env-file "$ENV_FILE" --backup-dir "$run_dir"
+"$scripts/backup-attachments.sh" --compose-file "$COMPOSE_FILE" --env-file "$ENV_FILE" --backup-dir "$run_dir"
+
+(
+  cd "$run_dir"
+  shopt -s nullglob
+  checksums=(*.sha256)
+  [[ ${#checksums[@]} -eq 2 ]] || { echo '[backup] 期望恰好两个校验文件' >&2; exit 1; }
+  sha256sum --check -- "${checksums[@]}"
+)
+
+printf 'status=SUCCESS\nstarted_utc=%s\nfinished_utc=%s\nconsistency=separate-live-backups-not-a-coordinated-snapshot\n' \
+  "$started" "$(date -u +%FT%TZ)" > "$run_dir/SUCCESS"
+printf '[backup] 成功：%s\n' "$run_dir"

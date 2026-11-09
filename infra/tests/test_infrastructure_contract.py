@@ -26,6 +26,7 @@ EXPECTED_FILES = [
     INFRA / "secrets" / ".gitignore",
     INFRA / "scripts" / "backup.sh",
     INFRA / "scripts" / "deploy.sh",
+    INFRA / "scripts" / "install-backup-timer.sh",
     INFRA / "scripts" / "rollback.sh",
     INFRA / "scripts" / "tailscale-serve.sh",
     INFRA / "scripts" / "backup-attachments.sh",
@@ -680,6 +681,40 @@ printf 'verification=PASS\\n'
             self.assertEqual(
                 final_checksum.read_text(encoding="utf-8"), f"checksum-{winner}"
             )
+
+
+    def test_backup_timer_units_exist_and_are_safe(self) -> None:
+        unit_dir = INFRA / "systemd"
+        service = (unit_dir / "project-operations-backup.service").read_text(encoding="utf-8")
+        timer = (unit_dir / "project-operations-backup.timer").read_text(encoding="utf-8")
+        wrapper = (unit_dir / "project-operations-backup").read_text(encoding="utf-8")
+
+        # oneshot 备份不该被 systemd 自动重启，失败要看 Result 而不是被掩盖。
+        self.assertIn("Requires=docker.service", service)
+        self.assertIn("Type=oneshot", service)
+        self.assertNotIn("Restart=", service)
+        self.assertIn("UMask=0077", service)
+
+        self.assertIn("Persistent=true", timer)
+        self.assertIn("Australia/Melbourne", timer)
+        self.assertIn("Unit=project-operations-backup.service", timer)
+
+        # 失败要留证据、成功才写 SUCCESS、并且明确声明不是一致快照。
+        self.assertIn("FAILED", wrapper)
+        self.assertIn("SUCCESS", wrapper)
+        self.assertIn("not-a-coordinated-snapshot", wrapper)
+        self.assertIn("flock -n", wrapper)
+
+    def test_backup_timer_installer_enables_only_after_a_successful_backup(self) -> None:
+        installer = (INFRA / "scripts" / "install-backup-timer.sh").read_text(encoding="utf-8")
+
+        # 路径必须走 drop-in：systemd 不继承调用者环境。
+        self.assertIn("project-operations-backup.service.d", installer)
+        self.assertNotIn("COMPOSE_FILE=\"$REPO/infra/compose.prod.yml\" ENV_FILE=\"$ENV_FILE\"", installer)
+        # enable 必须排在首次备份之后。
+        first_run = installer.index("systemctl start project-operations-backup.service")
+        enable = installer.index("systemctl enable --now project-operations-backup.timer")
+        self.assertLess(first_run, enable)
 
     def test_attachment_backup_artifacts_are_ignored_by_git(self) -> None:
         ignore_rules = (ROOT / ".gitignore").read_text(encoding="utf-8")

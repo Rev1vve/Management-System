@@ -1,0 +1,17 @@
+[Unit]
+Description=Project Operations database and attachment backups
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/usr/bin/bash /usr/local/sbin/project-operations-backup
+TimeoutStartSec=2h
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=project-operations-backup
