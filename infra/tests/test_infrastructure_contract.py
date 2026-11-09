@@ -21,6 +21,7 @@ EXPECTED_FILES = [
     INFRA / "compose.prod.yml",
     INFRA / "Caddyfile",
     INFRA / "README.md",
+    INFRA / "RESTORE-DRILL.md",
     INFRA / "env" / "dev.env.example",
     INFRA / "env" / "prod.env.example",
     INFRA / "secrets" / ".gitignore",
@@ -783,6 +784,21 @@ printf 'verification=PASS\\n'
             # 更旧的成品被删掉
             self.assertNotIn("20260101T000000Z-aaaaaa", remaining)
             self.assertNotIn("20260102T000000Z-bbbbbb", remaining)
+
+
+    def test_restore_drill_never_touches_the_production_project(self) -> None:
+        drill = (INFRA / "RESTORE-DRILL.md").read_text(encoding="utf-8")
+
+        # 演练必须显式声明一次性项目名，且在拉起、删除之前都断言。
+        self.assertIn("DRILL_PROJECT=project-operations-verify", drill)
+        self.assertGreaterEqual(drill.count('[ "$actual" = "$DRILL_PROJECT" ]'), 2)
+        # 不能在演练里用会写源库 schema 的 verify 脚本。
+        self.assertIn("不要在演练里跑 `verify-backup-restore.sh`", drill)
+        # 尾斜杠展开这个坑要写进文档，否则恢复路径会拼错。
+        self.assertIn('RUN_DIR="${RUN_DIR%/}"', drill)
+        # RTO 要拆成四段，不能只写数据库恢复耗时。
+        for part in ["数据库 restore", "附件 restore", "服务可用", "合计 RTO"]:
+            self.assertIn(part, drill)
 
     def test_attachment_backup_artifacts_are_ignored_by_git(self) -> None:
         ignore_rules = (ROOT / ".gitignore").read_text(encoding="utf-8")
