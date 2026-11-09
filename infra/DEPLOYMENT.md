@@ -85,6 +85,32 @@ systemctl show project-operations-backup.service -p Result -p ExecMainStatus
 sudo journalctl -u project-operations-backup.service -n 50 --no-pager
 ```
 
+### 5.1b 清理旧备份（先演练，再真删）
+
+```bash
+# 演练：只看会删什么，不动文件（默认就是 dry-run）
+sudo /srv/Management-System/infra/scripts/prune-backups.sh \
+  --backup-root /opt/project-operations/backups/scheduled \
+  --keep-days 14 --keep-last 3
+
+# 确认无误后真删
+sudo /srv/Management-System/infra/scripts/prune-backups.sh \
+  --backup-root /opt/project-operations/backups/scheduled \
+  --keep-days 14 --keep-last 3 --apply
+```
+
+安全规则（脚本里硬编码，不要绕过）：
+
+- **永远保留最近一次运行**，哪怕它很旧；**永远保留最近一次成功（SUCCESS）运行**——备份连续失败时，最后一份好数据不会被当成"旧的"删掉；
+- 只处理名字形如 `<UTC时间戳>-<后缀>` 的运行目录，其余文件一律不碰；
+- 没有 `SUCCESS`/`FAILED` 标记的中断目录，只有超过 `--partial-days`（默认 2）天才清理；
+- 备份根位于仓库内时直接拒绝；
+- 年龄按**目录名里的时间戳**算，不看 mtime（拷贝/恢复会改 mtime）。
+
+- [ ] 演练输出里"保护名单"包含最近一次与最近一次 SUCCESS
+- [ ] `--apply` 后 `sudo ls -1 /opt/project-operations/backups/scheduled | wc -l` 数量符合预期
+- [ ] 定期看一眼磁盘：`df -h /` 与 `sudo du -sh /opt/project-operations/backups`
+
 ### 5.2 恢复演练：**不要在生产和生产项目名下做**
 
 `verify-backup-restore.sh` 有两道硬约束，别去绕：

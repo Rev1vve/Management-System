@@ -27,6 +27,7 @@ EXPECTED_FILES = [
     INFRA / "scripts" / "backup.sh",
     INFRA / "scripts" / "deploy.sh",
     INFRA / "scripts" / "install-backup-timer.sh",
+    INFRA / "scripts" / "prune-backups.sh",
     INFRA / "scripts" / "rollback.sh",
     INFRA / "scripts" / "tailscale-serve.sh",
     INFRA / "scripts" / "backup-attachments.sh",
@@ -715,6 +716,73 @@ printf 'verification=PASS\\n'
         first_run = installer.index("systemctl start project-operations-backup.service")
         enable = installer.index("systemctl enable --now project-operations-backup.timer")
         self.assertLess(first_run, enable)
+
+
+    def test_prune_backups_is_dry_run_by_default_and_protects_recent_data(self) -> None:
+        script = (INFRA / "scripts" / "prune-backups.sh").read_text(encoding="utf-8")
+
+        # 默认只演练：必须要有 --apply 才删。
+        self.assertIn("--apply", script)
+        self.assertIn("APPLY=0", script)
+        # 三条保护：最近一次、最近一次 SUCCESS、最近 --keep-last 个。
+        self.assertIn('keep+=("${sorted[-1]}")', script)
+        self.assertIn('SUCCESS', script)
+        self.assertIn("KEEP_LAST", script)
+        # 只处理运行目录名，且不得在仓库内操作。
+        self.assertIn("[0-9]{8}T[0-9]{6}Z-", script)
+        self.assertIn("拒绝在仓库内操作", script)
+
+    def test_prune_backups_keeps_the_newest_and_the_newest_success(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "scheduled"
+            root.mkdir()
+            # 四个成品（不同时间戳）+ 一个中断的半成品
+            for index, name in enumerate(
+                [
+                    "20260101T000000Z-aaaaaa",
+                    "20260102T000000Z-bbbbbb",
+                    "20260103T000000Z-cccccc",
+                    "20260104T000000Z-dddddd",
+                ]
+            ):
+                # 注意：局部变量不能叫 run，会遮蔽模块级的 run() 辅助函数。
+                run_dir = root / name
+                run_dir.mkdir()
+                (run_dir / "SUCCESS").write_text("status=SUCCESS\n", encoding="utf-8")
+                # 全部做成"很旧"，只有最新一份是新的
+                stamp = 1_700_000_000 + index * 86400
+                os.utime(run_dir, (stamp, stamp))
+            partial = root / "20260105T000000Z-eeeeee"
+            partial.mkdir()
+            os.utime(partial, (1_700_000_000, 1_700_000_000))
+
+            result = run(
+                [
+                    "bash",
+                    str(INFRA / "scripts" / "prune-backups.sh"),
+                    "--backup-root",
+                    str(root),
+                    "--keep-days",
+                    "0",
+                    "--keep-last",
+                    "1",
+                    "--partial-days",
+                    "0",
+                    "--apply",
+                ]
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            remaining = sorted(path.name for path in root.iterdir())
+            # 最新一次运行被保留（即使 keep-last=1 也一样）
+            self.assertIn("20260105T000000Z-eeeeee", remaining)
+            # 最近一次 SUCCESS 被保留
+            self.assertIn("20260104T000000Z-dddddd", remaining)
+            # 更旧的成品被删掉
+            self.assertNotIn("20260101T000000Z-aaaaaa", remaining)
+            self.assertNotIn("20260102T000000Z-bbbbbb", remaining)
 
     def test_attachment_backup_artifacts_are_ignored_by_git(self) -> None:
         ignore_rules = (ROOT / ".gitignore").read_text(encoding="utf-8")
