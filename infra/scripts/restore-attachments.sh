@@ -38,6 +38,11 @@ done
 backup_file="${positional[0]}"
 [[ "${CONFIRM_ATTACHMENTS_RESTORE:-NO}" == "YES" ]] || \
   die "set CONFIRM_ATTACHMENTS_RESTORE=YES to replace the attachment volume"
+trap close_backup_snapshot EXIT
+open_verified_backup_snapshot "$backup_file"
+validate_attachment_archive "/proc/self/fd/${BACKUP_VALIDATION_FD}"
+exec {BACKUP_VALIDATION_FD}<&-
+BACKUP_VALIDATION_FD=""
 
 # 整卷替换不可逆：项目身份必须是显式给的（--project-name 或 COMPOSE_PROJECT_NAME），
 # 不能只靠 env 文件插值——env 文件里那行缺失时会静默落到生产项目。
@@ -48,11 +53,6 @@ if [[ "${RESTORE_ALLOW_PRODUCTION:-NO}" != "YES" ]]; then
     *prod*) die "refusing to replace attachments of a production-like project; set RESTORE_ALLOW_PRODUCTION=YES if this is intentional" ;;
   esac
 fi
-trap close_backup_snapshot EXIT
-open_verified_backup_snapshot "$backup_file"
-validate_attachment_archive "/proc/self/fd/${BACKUP_VALIDATION_FD}"
-exec {BACKUP_VALIDATION_FD}<&-
-BACKUP_VALIDATION_FD=""
 load_compose_context
 
 log "restoring attachment volume from validated archive"
