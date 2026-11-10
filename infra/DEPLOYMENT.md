@@ -163,44 +163,77 @@ sudo /srv/Management-System/infra/scripts/install-offsite-timer.sh \
 
 建议：**至少两块轮换**（一块插着同步、一块离线存放），并加 `--age-recipient` 加密，因为便携介质丢了就是数据泄露。
 
-### 5.1d 失败告警（邮件）
+### 5.1d 失败告警（推送或邮件，二选一）
 
-备份/副本失败现在只写 journal——不看就等于没有。用 `msmtp` + systemd `OnFailure=` 发邮件：
+备份/副本失败现在只写 journal——不看就等于没有。两种通道：
+
+#### 通道一（推荐，最简单）：webhook 推送，不需要邮箱
+
+以 **PushPlus**（微信接收）为例，全程 2 分钟：
+
+1. 浏览器打开 <https://www.pushplus.plus/>，用微信扫码登录
+2. 首页会给你一个 **token**（一长串字符）
+3. 你的推送地址就是：`https://www.pushplus.plus/send?token=你的token`
 
 ```bash
-sudo apt install -y msmtp
+sudo /srv/Management-System/infra/scripts/install-alerting.sh \
+  --webhook 'https://www.pushplus.plus/send?token=你的token' \
+  --webhook-kind pushplus
+```
 
-# SMTP 密码单独存文件，权限 600
+- 安装器会**立刻发一条测试推送**；手机微信收到才算装好
+- 没收到就报错退出，不会留下"配了但永远发不出去"的告警
+
+其他等价服务（同样只给一个 URL）：
+
+| 服务     | 接收端      | `--webhook-kind` |
+| -------- | ----------- | ---------------- |
+| PushPlus | 微信        | `pushplus`       |
+| Server酱 | 微信        | `serverchan`     |
+| Bark     | iPhone 通知 | `bark`           |
+
+#### 通道二：邮件（需要邮箱账号）
+
+```bash
 sudo install -d -m 0700 /opt/project-operations/shared/secrets
-sudo sh -c 'umask 077; printf "%s" "你的SMTP密码" > /opt/project-operations/shared/secrets/smtp-password.txt'
+sudo sh -c 'umask 077; printf "%s" "你的SMTP密码或授权码" > /opt/project-operations/shared/secrets/smtp-password.txt'
 
 sudo /srv/Management-System/infra/scripts/install-alerting.sh \
   --to 你的邮箱@example.com \
-  --from robot@example.com \
+  --from 用来发信的邮箱@example.com \
   --host smtp.example.com --port 587 \
   --password-file /opt/project-operations/shared/secrets/smtp-password.txt
 ```
 
-安装器会**真的发一封测试邮件**，发不出去就报错退出——不留"配置看起来对、实际永远发不出去"的静默告警。
+三个概念先弄清：
 
-验收：
+- **SMTP**：发邮件用的协议，相当于"邮局"；你只需要知道邮局地址（`smtp.xxx.com`）和门禁（账号密码）
+- **发件地址**：一个你拥有的邮箱账号。它不需要是新注册的，用现有邮箱即可
+- **用户名/密码**：就是这个邮箱的登录名，但**密码通常要换成"应用专用密码/授权码"**，不是网页登录密码：
+
+| 邮箱    | 怎么拿密码                           | 主机                     |
+| ------- | ------------------------------------ | ------------------------ |
+| Gmail   | 开两步验证 → 安全性 → 应用专用密码   | `smtp.gmail.com:587`     |
+| QQ 邮箱 | 设置 → 账户 → 开启 SMTP → 生成授权码 | `smtp.qq.com:587`        |
+| 163     | 设置 → POP3/SMTP → 开启 → 授权码     | `smtp.163.com:465`       |
+| Outlook | 账户安全 → 高级安全选项 → 应用密码   | `smtp.office365.com:587` |
+
+#### 验收（两种通道都一样）
 
 ```bash
 systemctl show project-operations-backup.service -p OnFailure
 systemctl show project-operations-offsite.service -p OnFailure
-# 期望分别指向 project-operations-alert@project-operations-backup.service / ...-offsite.service
 
-# 主动制造一次失败，确认真的会收到邮件
-sudo systemctl start project-operations-offsite.service   # 拔掉外接盘再跑，应失败并触发告警
+# 制造一次真实失败（拔掉外接盘再跑副本任务）
+sudo systemctl start project-operations-offsite.service
 journalctl -u project-operations-alert@project-operations-offsite.service -n 30 --no-pager
 ```
 
-告警链自身失败时不会静默：记录落到 `/var/lib/project-operations/alerts/*.failed.unsent`，
-并且 `systemctl status` 显示 failed。
+告警链自身失败也不静默：记录落在 `/var/lib/project-operations/alerts/*.failed.unsent`，且 `systemctl status` 显示 failed。
 
-- [ ] 测试邮件真的收到（不是只看脚本说成功）
-- [ ] 制造一次失败后收到告警邮件
-- [ ] 拔网线/停 SMTP 后再制造失败，确认留下 `.failed.unsent` 记录
+- [ ] 测试消息真的收到（不是只看脚本说成功）
+- [ ] 制造一次失败后收到告警
+- [ ] 断网后再制造失败，确认留下 `.failed.unsent` 记录
 
 ### 5.2 恢复演练：**不要在生产和生产项目名下做**
 

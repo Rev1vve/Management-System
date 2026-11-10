@@ -8,14 +8,18 @@ set -Eeuo pipefail
 
 Usage() {
   cat <<'USAGE'
-Usage: install-alerting.sh --to ADDR --from ADDR --host SMTP_HOST [options]
+Usage: install-alerting.sh (--webhook URL | --to ADDR --from ADDR --host SMTP_HOST) [options]
 
-Install msmtp and wire backup failures to email alerts.
+Wire scheduled-job failures to a notification channel.
 
-Required:
-  --to ADDR          Recipient address
-  --from ADDR        Envelope/From address
-  --host SMTP_HOST   SMTP server hostname
+通道一（推荐，最简单）：webhook 推送，不需要邮箱账号
+  --webhook URL          推送地址（PushPlus / Server酱 / Bark）
+  --webhook-kind KIND    pushplus（默认）| serverchan | bark
+
+通道二：邮件
+  --to ADDR          收件地址
+  --from ADDR        发件地址
+  --host SMTP_HOST   SMTP 服务器
 
 Options:
   --port PORT            SMTP port (default: 587)
@@ -42,6 +46,8 @@ REPO="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TO=""
 FROM=""
 SMTP_HOST=""
+WEBHOOK=""
+WEBHOOK_KIND=pushplus
 SMTP_PORT=587
 SMTP_USER=""
 PASSWORD_FILE=""
@@ -52,6 +58,8 @@ DRY_RUN=0
 while (($# > 0)); do
   case "$1" in
     --help|-h) Usage; exit 0 ;;
+    --webhook) WEBHOOK="${2:?--webhook 需要 URL}"; shift 2 ;;
+    --webhook-kind) WEBHOOK_KIND="${2:?--webhook-kind 需要类型}"; shift 2 ;;
     --to) TO="${2:?--to 需要地址}"; shift 2 ;;
     --from) FROM="${2:?--from 需要地址}"; shift 2 ;;
     --host) SMTP_HOST="${2:?--host 需要主机名}"; shift 2 ;;
@@ -75,7 +83,16 @@ run() {
 }
 
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || die "需要 root：用 sudo 执行"
-[[ -n "$TO" && -n "$FROM" && -n "$SMTP_HOST" ]] || { Usage; die "必须提供 --to/--from/--host"; }
+if [[ -z "$WEBHOOK" ]]; then
+  [[ -n "$TO" && -n "$FROM" && -n "$SMTP_HOST" ]] || {
+    Usage
+    die "需要二选一：--webhook URL，或 --to/--from/--host（邮件）"
+  }
+fi
+case "$WEBHOOK_KIND" in
+  pushplus|serverchan|bark) ;;
+  *) die "--webhook-kind 只支持 pushplus / serverchan / bark" ;;
+esac
 [[ -n "$SMTP_USER" ]] || SMTP_USER="$FROM"
 [[ -n "$PASSWORD_FILE" ]] && [[ -f "$PASSWORD_FILE" ]] || true
 if [[ -n "$PASSWORD_FILE" && -f "$PASSWORD_FILE" ]]; then
@@ -83,14 +100,18 @@ if [[ -n "$PASSWORD_FILE" && -f "$PASSWORD_FILE" ]]; then
   [[ "$mode" == "600" || "$mode" == "400" ]] || die "$PASSWORD_FILE 权限是 $mode，应为 600"
 fi
 
-if ! command -v msmtp >/dev/null; then
+if [[ -n "$WEBHOOK" ]]; then
+  log "使用 webhook 通道（$WEBHOOK_KIND），不安装 msmtp"
+elif ! command -v msmtp >/dev/null; then
   log "安装 msmtp"
   run apt-get update -qq
   run apt-get install -y --no-install-recommends msmtp
 fi
 
 # 配置放 /etc/msmtprc：root 专用，权限 0600。
-if ((DRY_RUN)); then
+if [[ -n "$WEBHOOK" ]]; then
+  log "跳过 /etc/msmtprc（webhook 模式）"
+elif ((DRY_RUN)); then
   log "dry-run：跳过写 /etc/msmtprc"
 else
   {
@@ -129,7 +150,12 @@ if ((DRY_RUN)); then
 else
   {
     echo '[Service]'
-    echo "Environment=ALERT_TO=$TO"
+    if [[ -n "$WEBHOOK" ]]; then
+      echo "Environment=ALERT_WEBHOOK=$WEBHOOK"
+      echo "Environment=ALERT_WEBHOOK_KIND=$WEBHOOK_KIND"
+    else
+      echo "Environment=ALERT_TO=$TO"
+    fi
   } > /etc/systemd/system/project-operations-alert@.service.d/10-recipient.conf
   chmod 0644 /etc/systemd/system/project-operations-alert@.service.d/10-recipient.conf
 fi
@@ -141,13 +167,21 @@ if ((SKIP_TEST)); then
 elif ((DRY_RUN)); then
   log "dry-run：跳过测试邮件"
 else
-  log "发送测试邮件到 $TO"
-  if ! printf '这是一封来自 %s 的测试邮件。\n\n收到它说明备份失败告警链路可用。\n' \
-    "$(hostname -f 2>/dev/null || hostname)" |
-    msmtp --read-envelope-from --subject='[project-operations] 告警链路测试' "$TO"; then
-    die "测试邮件发送失败：请检查 SMTP 主机/端口/凭据，或 --tls 设置"
+  log "发送测试告警到 ${WEBHOOK:-$TO}"
+  if [[ -n "$WEBHOOK" ]]; then
+    if ! ALERT_WEBHOOK="$WEBHOOK" ALERT_WEBHOOK_KIND="$WEBHOOK_KIND" \
+      /usr/local/sbin/project-operations-notify-failure project-operations-selftest.service; then
+      die "测试告警发送失败：请检查 webhook 地址与类型"
+    fi
+    log "测试告警已发送；请确认手机/微信确实收到（没收到就别认为装好了）"
+  else
+    if ! printf '这是一封来自 %s 的测试邮件。\n\n收到它说明备份失败告警链路可用。\n' \
+      "$(hostname -f 2>/dev/null || hostname)" |
+      msmtp --read-envelope-from --subject='[project-operations] 告警链路测试' "$TO"; then
+      die "测试邮件发送失败：请检查 SMTP 主机/端口/凭据，或 --tls 设置"
+    fi
+    log "测试邮件已发送；请确认收件箱确实收到（没收到就别认为装好了）"
   fi
-  log "测试邮件已发送；请确认收件箱确实收到（没收到就别认为装好了）"
 fi
 
 cat <<'NEXT'

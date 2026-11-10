@@ -906,6 +906,23 @@ printf 'verification=PASS\\n'
         self.assertIn("测试邮件发送失败", installer)
         self.assertIn("没收到就别认为装好了", installer)
 
+
+    def test_alerting_supports_a_webhook_channel(self) -> None:
+        notifier = (INFRA / "systemd" / "project-operations-notify-failure").read_text(encoding="utf-8")
+        installer = (INFRA / "scripts" / "install-alerting.sh").read_text(encoding="utf-8")
+
+        # 不需要邮箱账号的通道：webhook 优先，msmtp 作为备选。
+        self.assertIn("ALERT_WEBHOOK", notifier)
+        self.assertIn("send_webhook", notifier)
+        for kind in ["pushplus", "serverchan", "bark"]:
+            self.assertIn(kind, notifier)
+        # 安装器必须要求二选一，而不是两边都可缺省。
+        self.assertIn("需要二选一：--webhook URL，或 --to/--from/--host（邮件）", installer)
+        # webhook 模式不该去装 msmtp。
+        self.assertIn("不安装 msmtp", installer)
+        # 两条通道都要有"发送测试并确认收到"的要求。
+        self.assertIn("没收到就别认为装好了", installer)
+
     def test_attachment_backup_artifacts_are_ignored_by_git(self) -> None:
         ignore_rules = (ROOT / ".gitignore").read_text(encoding="utf-8")
         self.assertIn("project-operations-attachments-*.tar.gz", ignore_rules)

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# 任务 13：定时任务失败时发邮件。
+# 任务 13：定时任务失败时告警。支持两种通道，按环境变量二选一：
+#  - ALERT_WEBHOOK：向 webhook 发一条 POST（微信/手机推送，最简单，不需要邮箱）
+#  - 否则用 msmtp 发邮件（需要 SMTP 账号）
 # 由 project-operations-alert@<unit>.service 调用，参数是被失败的单元名。
 #
 # 设计取舍：
-#  - 告警本身也可能失败（SMTP 挂了、网络断了）。发信失败不静默：
+#  - 告警本身也可能失败（SMTP 挂了、网络断了）。发送失败不静默：
 #    写一条到 /var/lib/project-operations/alerts/<时间>-<unit>.failed，并退出非零，
 #    这样 `systemctl status project-operations-alert@...` 也能看到。
 #  - 邮件内容只用 journal 的最后若干行，不 dump 整个日志，避免把敏感数据发出去。
@@ -56,9 +58,57 @@ send_mail() {
     "${ALERT_TO:-root}"
 }
 
-if send_mail; then
+# webhook 通道：优先使用，因为它不需要邮箱账号，配置量最小。
+# 支持三类常见服务，靠 ALERT_WEBHOOK_KIND 区分请求体格式。
+send_webhook() {
+  local url="${ALERT_WEBHOOK:-}"
+  [[ -n "$url" ]] || return 1
+  command -v curl >/dev/null || { echo "[alert] 缺少 curl" >&2; return 1; }
+
+  local title="备份任务失败: ${unit} @ ${host}"
+  local payload
+  case "${ALERT_WEBHOOK_KIND:-pushplus}" in
+    bark)
+      # Bark（iOS）：GET https://api.day.app/<key>/<标题>/<正文>
+      if ! curl -fsS --max-time 20 --get "$url" \
+        --data-urlencode "title=$title" >/dev/null 2>&1; then
+        # 部分 Bark 版本要求路径形式，退回 POST JSON
+        curl -fsS --max-time 20 -H 'Content-Type: application/json' \
+          -d "$(printf '{"title":"%s","body":"%s"}' "$title" "$(printf '%s' "$body" | tr -d '\r' | sed ':a;N;$!ba;s/\n/\\n/g')")" \
+          "$url" >/dev/null || return 1
+      fi
+      ;;
+    serverchan)
+      # Server酱：POST 表单 title/desp
+      curl -fsS --max-time 20 "$url" \
+        --data-urlencode "title=$title" --data-urlencode "desp=$body" >/dev/null || return 1
+      ;;
+    pushplus|*)
+      # PushPlus：POST JSON {title, content, template}
+      payload="$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+      curl -fsS --max-time 20 -H 'Content-Type: application/json' \
+        -d "$(printf '{"title":"%s","content":%s,"template":"txt"}' "$title" "$payload")" \
+        "$url" >/dev/null || return 1
+      ;;
+  esac
+  return 0
+}
+
+send_alert() {
+  if [[ -n "${ALERT_WEBHOOK:-}" ]]; then
+    send_webhook
+  else
+    send_mail
+  fi
+}
+
+if send_alert; then
   rm -f -- "${record}.failed"
-  echo "[alert] 已发送告警：$unit"
+  if [[ -n "${ALERT_WEBHOOK:-}" ]]; then
+    echo "[alert] 已通过 webhook 发送告警（${ALERT_WEBHOOK_KIND:-pushplus}）：$unit"
+  else
+    echo "[alert] 已发送邮件告警：$unit"
+  fi
   exit 0
 fi
 
