@@ -1,0 +1,19 @@
+[Unit]
+Description=Copy Project Operations backups to the external disk
+Requires=docker.service
+After=docker.service project-operations-backup.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+# 外接盘必须在运行前已经挂载；没有挂载点就失败，而不是悄悄复制到系统盘。
+ConditionPathIsMountPoint=/media/OFFSITE_DISK_LABEL
+ExecStart=/usr/bin/bash /usr/local/sbin/project-operations-offsite
+TimeoutStartSec=3h
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=project-operations-offsite

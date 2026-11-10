@@ -30,6 +30,8 @@ EXPECTED_FILES = [
     INFRA / "scripts" / "install-backup-timer.sh",
     INFRA / "scripts" / "prune-backups.sh",
     INFRA / "scripts" / "seed-drill-data.sh",
+    INFRA / "scripts" / "backup-offsite.sh",
+    INFRA / "scripts" / "install-offsite-timer.sh",
     INFRA / "scripts" / "rollback.sh",
     INFRA / "scripts" / "tailscale-serve.sh",
     INFRA / "scripts" / "backup-attachments.sh",
@@ -855,6 +857,34 @@ printf 'verification=PASS\\n'
         self.assertIn("seed_marker", script)
         # 工作日志从 DRAFT 起步，符合数据库守卫。
         self.assertIn("'DRAFT'", script)
+
+
+    def test_offsite_copy_refuses_same_device_and_verifies_checksums(self) -> None:
+        script = (INFRA / "scripts" / "backup-offsite.sh").read_text(encoding="utf-8")
+
+        # 同一设备上的"副本"没有意义：必须比较设备号并拒绝。
+        self.assertIn("stat -c %d", script)
+        self.assertIn("这不算异机副本", script)
+        # 复制后必须逐份校验；校验失败要删掉副本，不能留下假成功目录。
+        self.assertIn("sha256sum --check", script)
+        self.assertIn("校验失败，已删除副本", script)
+        # 只带走已完成的运行，并把未完成的说清楚。
+        self.assertIn("跳过未完成/失败的运行", script)
+        # 外接盘会丢：支持加密。
+        self.assertIn("--age-recipient", script)
+
+    def test_offsite_installer_requires_a_real_mount_point(self) -> None:
+        installer = (INFRA / "scripts" / "install-offsite-timer.sh").read_text(encoding="utf-8")
+
+        # 没挂上外接盘时若悄悄复制到系统盘，等于没有副本：必须硬拒绝。
+        self.assertIn("mountpoint -q", installer)
+        self.assertIn("拒绝安装（否则会复制到系统盘）", installer)
+        # 路径通过 drop-in 注入，而不是依赖调用者环境。
+        self.assertIn("project-operations-offsite.service.d", installer)
+        # 首次复制成功后才启用定时器。
+        first_run = installer.index("systemctl start project-operations-offsite.service")
+        enable = installer.index("systemctl enable --now project-operations-offsite.timer")
+        self.assertLess(first_run, enable)
 
     def test_attachment_backup_artifacts_are_ignored_by_git(self) -> None:
         ignore_rules = (ROOT / ".gitignore").read_text(encoding="utf-8")

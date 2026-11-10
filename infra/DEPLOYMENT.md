@@ -111,6 +111,58 @@ sudo /srv/Management-System/infra/scripts/prune-backups.sh \
 - [ ] `--apply` 后 `sudo ls -1 /opt/project-operations/backups/scheduled | wc -l` 数量符合预期
 - [ ] 定期看一眼磁盘：`df -h /` 与 `sudo du -sh /opt/project-operations/backups`
 
+### 5.1c 外接盘副本（防盘坏 / 误删 / 勒索）
+
+本机备份与数据库在同一块盘上，盘坏就一起没了。把已完成的备份复制到**外接盘**：
+
+```bash
+# 1) 确认外接盘已挂载（不是系统盘上的普通目录）
+lsblk -o NAME,SIZE,MOUNTPOINT | grep -E "sd[b-z]|nvme[1-9]"
+mountpoint /media/<用户>/<盘标>
+
+# 2) 先演练
+sudo /srv/Management-System/infra/scripts/backup-offsite.sh \
+  --source /opt/project-operations/backups/scheduled \
+  --target /media/<用户>/<盘标> --dry-run
+
+# 3) 真复制（逐个校验，校验不过会删掉副本）
+sudo /srv/Management-System/infra/scripts/backup-offsite.sh \
+  --source /opt/project-operations/backups/scheduled \
+  --target /media/<用户>/<盘标>
+```
+
+脚本的三道护栏：
+
+- **源与目标同一设备直接拒绝**（`stat -c %d` 相同 = 没在复制）；
+- 复制后 `sha256sum -c`，**校验失败就删掉副本**，不留下"看起来成功"的目录；
+- 只带走带 `SUCCESS` 的运行；未完成/失败的明确跳过。
+
+装成每日定时（03:30，在 03:00 备份之后）：
+
+```bash
+sudo /srv/Management-System/infra/scripts/install-offsite-timer.sh \
+  --target /media/<用户>/<盘标>
+```
+
+安装器要求目标**此刻就是挂载点**，否则拒绝安装——外接盘没插好时悄悄复制到系统盘，等于假定"备份存在"而其实没有。
+
+- [ ] `systemctl list-timers project-operations-offsite.timer --all --no-pager` 有下一次
+- [ ] 拔盘后再手动触发一次，`systemctl status` 应为 failed（Condition 拦住了），而不是静默成功
+- [ ] 目标盘上的每次运行目录里都有 `.ok` 标记
+
+#### U 盘能不能用？
+
+能装，但不建议当**唯一**副本：
+
+| 风险     | 说明                                                                               |
+| -------- | ---------------------------------------------------------------------------------- |
+| 闪存寿命 | U 盘颗粒和主控普遍不如 SSD/HDD，长期反复写入更容易坏                               |
+| 静默损坏 | U 盘常在无提示的情况下写坏数据；脚本的 `sha256sum -c` 能发现，但发现时已经没副本了 |
+| 文件系统 | 多数 U 盘是 exFAT/FAT32：不保留权限，断电易损                                      |
+| 易丢     | 体积小、会被借走、会掉                                                             |
+
+建议：**至少两块轮换**（一块插着同步、一块离线存放），并加 `--age-recipient` 加密，因为便携介质丢了就是数据泄露。
+
 ### 5.2 恢复演练：**不要在生产和生产项目名下做**
 
 > 逐条操作、预期输出与耗时口径见 **`infra/RESTORE-DRILL.md`**。

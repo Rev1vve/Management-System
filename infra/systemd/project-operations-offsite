@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# 外接盘副本的执行体（由 project-operations-offsite.service 调用）。
+# 路径通过 drop-in 覆盖，见 infra/scripts/install-offsite-timer.sh。
+
+umask 077
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+source_dir="${SOURCE_DIR:-/opt/project-operations/backups/scheduled}"
+target_dir="${TARGET_DIR:-/media/OFFSITE_DISK_LABEL/project-operations}"
+keep_runs="${KEEP_RUNS:-14}"
+age_recipient="${AGE_RECIPIENT:-}"
+scripts="${SCRIPTS_DIR:-/srv/Management-System/infra/scripts}"
+
+[[ -d "$target_dir" ]] || {
+  echo "[offsite] 目标目录不存在，外接盘可能没挂载：$target_dir" >&2
+  exit 1
+}
+
+args=(--source "$source_dir" --target "$target_dir" --keep-runs "$keep_runs")
+[[ -n "$age_recipient" ]] && args+=(--age-recipient "$age_recipient")
+
+exec "$scripts/backup-offsite.sh" "${args[@]}"

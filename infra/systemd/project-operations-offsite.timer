@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily offsite copy at 03:30 Melbourne time (after the 03:00 backup)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Australia/Melbourne
+Persistent=true
+AccuracySec=1min
+Unit=project-operations-offsite.service
+
+[Install]
+WantedBy=timers.target
