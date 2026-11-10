@@ -163,6 +163,45 @@ sudo /srv/Management-System/infra/scripts/install-offsite-timer.sh \
 
 建议：**至少两块轮换**（一块插着同步、一块离线存放），并加 `--age-recipient` 加密，因为便携介质丢了就是数据泄露。
 
+### 5.1d 失败告警（邮件）
+
+备份/副本失败现在只写 journal——不看就等于没有。用 `msmtp` + systemd `OnFailure=` 发邮件：
+
+```bash
+sudo apt install -y msmtp
+
+# SMTP 密码单独存文件，权限 600
+sudo install -d -m 0700 /opt/project-operations/shared/secrets
+sudo sh -c 'umask 077; printf "%s" "你的SMTP密码" > /opt/project-operations/shared/secrets/smtp-password.txt'
+
+sudo /srv/Management-System/infra/scripts/install-alerting.sh \
+  --to 你的邮箱@example.com \
+  --from robot@example.com \
+  --host smtp.example.com --port 587 \
+  --password-file /opt/project-operations/shared/secrets/smtp-password.txt
+```
+
+安装器会**真的发一封测试邮件**，发不出去就报错退出——不留"配置看起来对、实际永远发不出去"的静默告警。
+
+验收：
+
+```bash
+systemctl show project-operations-backup.service -p OnFailure
+systemctl show project-operations-offsite.service -p OnFailure
+# 期望分别指向 project-operations-alert@project-operations-backup.service / ...-offsite.service
+
+# 主动制造一次失败，确认真的会收到邮件
+sudo systemctl start project-operations-offsite.service   # 拔掉外接盘再跑，应失败并触发告警
+journalctl -u project-operations-alert@project-operations-offsite.service -n 30 --no-pager
+```
+
+告警链自身失败时不会静默：记录落到 `/var/lib/project-operations/alerts/*.failed.unsent`，
+并且 `systemctl status` 显示 failed。
+
+- [ ] 测试邮件真的收到（不是只看脚本说成功）
+- [ ] 制造一次失败后收到告警邮件
+- [ ] 拔网线/停 SMTP 后再制造失败，确认留下 `.failed.unsent` 记录
+
 ### 5.2 恢复演练：**不要在生产和生产项目名下做**
 
 > 逐条操作、预期输出与耗时口径见 **`infra/RESTORE-DRILL.md`**。

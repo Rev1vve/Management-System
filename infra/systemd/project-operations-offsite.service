@@ -1,4 +1,5 @@
 [Unit]
+OnFailure=project-operations-alert@%n.service
 Description=Copy Project Operations backups to the external disk
 Requires=docker.service
 After=docker.service project-operations-backup.service

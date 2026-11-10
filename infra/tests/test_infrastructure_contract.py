@@ -32,6 +32,7 @@ EXPECTED_FILES = [
     INFRA / "scripts" / "seed-drill-data.sh",
     INFRA / "scripts" / "backup-offsite.sh",
     INFRA / "scripts" / "install-offsite-timer.sh",
+    INFRA / "scripts" / "install-alerting.sh",
     INFRA / "scripts" / "rollback.sh",
     INFRA / "scripts" / "tailscale-serve.sh",
     INFRA / "scripts" / "backup-attachments.sh",
@@ -885,6 +886,25 @@ printf 'verification=PASS\\n'
         first_run = installer.index("systemctl start project-operations-offsite.service")
         enable = installer.index("systemctl enable --now project-operations-offsite.timer")
         self.assertLess(first_run, enable)
+
+
+    def test_failure_alerting_is_wired_and_cannot_fail_silently(self) -> None:
+        backup_unit = (INFRA / "systemd" / "project-operations-backup.service").read_text(encoding="utf-8")
+        offsite_unit = (INFRA / "systemd" / "project-operations-offsite.service").read_text(encoding="utf-8")
+        template = (INFRA / "systemd" / "project-operations-alert@.service").read_text(encoding="utf-8")
+        notifier = (INFRA / "systemd" / "project-operations-notify-failure").read_text(encoding="utf-8")
+        installer = (INFRA / "scripts" / "install-alerting.sh").read_text(encoding="utf-8")
+
+        # 两个定时任务失败都必须触发告警。
+        self.assertIn("OnFailure=project-operations-alert@%n.service", backup_unit)
+        self.assertIn("OnFailure=project-operations-alert@%n.service", offsite_unit)
+        self.assertIn("ExecStart=/usr/bin/bash /usr/local/sbin/project-operations-notify-failure %i", template)
+        # 告警自己失败时不能静默：留下记录并以非零退出。
+        self.assertIn(".failed.unsent", notifier)
+        self.assertIn("exit 1", notifier)
+        # 安装器必须真的发测试邮件才能算装好。
+        self.assertIn("测试邮件发送失败", installer)
+        self.assertIn("没收到就别认为装好了", installer)
 
     def test_attachment_backup_artifacts_are_ignored_by_git(self) -> None:
         ignore_rules = (ROOT / ".gitignore").read_text(encoding="utf-8")

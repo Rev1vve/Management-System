@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# 任务 13：定时任务失败时发邮件。
+# 由 project-operations-alert@<unit>.service 调用，参数是被失败的单元名。
+#
+# 设计取舍：
+#  - 告警本身也可能失败（SMTP 挂了、网络断了）。发信失败不静默：
+#    写一条到 /var/lib/project-operations/alerts/<时间>-<unit>.failed，并退出非零，
+#    这样 `systemctl status project-operations-alert@...` 也能看到。
+#  - 邮件内容只用 journal 的最后若干行，不 dump 整个日志，避免把敏感数据发出去。
+
+umask 077
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+unit="${1:-unknown.service}"
+state_dir="${ALERT_STATE_DIR:-/var/lib/project-operations/alerts}"
+host="$(hostname -f 2>/dev/null || hostname)"
+subject_prefix="${ALERT_SUBJECT_PREFIX:-[project-operations]}"
+
+install -d -m 0700 "$state_dir"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+record="$state_dir/${stamp}-${unit}"
+
+{
+  echo "unit=$unit"
+  echo "host=$host"
+  echo "time_utc=$(date -u +%FT%TZ)"
+  echo "time_local=$(date +%FT%T%z)"
+  echo "--- systemctl status ---"
+  systemctl status "$unit" --no-pager --lines=0 2>&1 || true
+  echo "--- last journal lines ---"
+  journalctl -u "$unit" -n 60 --no-pager --output=short-iso 2>&1 || true
+} > "${record}.failed"
+
+summary="$(systemctl show "$unit" -p Result -p ExecMainStatus 2>/dev/null | tr '\n' ' ')"
+body="主机：$host
+单元：$unit
+状态：$summary
+时间：$(date +%FT%T%z)
+
+最近日志：
+$(journalctl -u "$unit" -n 40 --no-pager --output=short-iso 2>&1 || echo '(无法读取日志)')
+
+完整记录：${record}.failed
+"
+
+send_mail() {
+  if ! command -v msmtp >/dev/null; then
+    echo "[alert] 未安装 msmtp，无法发信" >&2
+    return 1
+  fi
+  printf '%s' "$body" | msmtp \
+    --read-envelope-from \
+    --subject="${subject_prefix} 备份任务失败: ${unit} @ ${host}" \
+    "${ALERT_TO:-root}"
+}
+
+if send_mail; then
+  rm -f -- "${record}.failed"
+  echo "[alert] 已发送告警：$unit"
+  exit 0
+fi
+
+mv -- "${record}.failed" "${record}.failed.unsent" 2>/dev/null || true
+echo "[alert] 告警发送失败，记录留在 ${record}.failed.unsent" >&2
+exit 1

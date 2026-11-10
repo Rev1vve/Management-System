@@ -1,0 +1,16 @@
+[Unit]
+Description=Mail an alert when %i fails
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+# %i 是被失败的单元名（由 OnFailure= 传入）。
+ExecStart=/usr/bin/bash /usr/local/sbin/project-operations-notify-failure %i
+TimeoutStartSec=2min
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=project-operations-alert
