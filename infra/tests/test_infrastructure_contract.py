@@ -789,17 +789,59 @@ printf 'verification=PASS\\n'
     def test_restore_drill_never_touches_the_production_project(self) -> None:
         drill = (INFRA / "RESTORE-DRILL.md").read_text(encoding="utf-8")
 
-        # 演练必须显式声明一次性项目名，且在拉起、删除之前都断言。
-        self.assertIn("DRILL_PROJECT=project-operations-verify", drill)
-        self.assertGreaterEqual(drill.count('[ "$actual" = "$DRILL_PROJECT" ]'), 2)
-        # 不能在演练里用会写源库 schema 的 verify 脚本。
-        self.assertIn("不要在演练里跑 `verify-backup-restore.sh`", drill)
-        # 尾斜杠展开这个坑要写进文档，否则恢复路径会拼错。
-        self.assertIn('RUN_DIR="${RUN_DIR%/}"', drill)
-        # RTO 要拆成四段，不能只写数据库恢复耗时。
-        for part in ["数据库 restore", "附件 restore", "服务可用", "合计 RTO"]:
-            self.assertIn(part, drill)
+        # 断言必须是会中止的助手，不能只是打印。
+        self.assertIn("set -Eeuo pipefail", drill)
+        self.assertIn("fail() { echo ", drill)
+        self.assertIn("require_drill_project", drill)
+        # 破坏性操作（restore / 附件整卷替换 / down --volumes）之前都要调用它。
+        self.assertGreaterEqual(drill.count("require_drill_project"), 3)
+        down_index = drill.index("down --volumes")
+        self.assertLess(drill.rindex("require_drill_project", 0, down_index), down_index)
+        # down 必须带全部 profile。
+        self.assertIn("--profile application --profile tools --profile maintenance down --volumes", drill)
+        # 不调用会写源库 schema 的 verify 脚本。
+        self.assertIn("不调用会写 `infra_verify` schema", drill)
 
+    def test_restore_scripts_accept_an_explicit_project_name(self) -> None:
+        lib = (INFRA / "scripts" / "lib.sh").read_text(encoding="utf-8")
+        attachments = (INFRA / "scripts" / "restore-attachments.sh").read_text(encoding="utf-8")
+        drill = (INFRA / "RESTORE-DRILL.md").read_text(encoding="utf-8")
+
+        # 公共选项里必须有 --project-name，并在 compose 调用上带 -p。
+        self.assertIn("--project-name", lib)
+        self.assertIn('COMPOSE_ARGS+=(--project-name "$PROJECT_NAME")', lib)
+        # 附件整卷替换：没有显式项目名就拒绝，名字含 prod 也拒绝。
+        self.assertIn("refusing to replace attachments without an explicit --project-name", attachments)
+        self.assertIn("RESTORE_ALLOW_PRODUCTION", attachments)
+        # 文档里必须真的把项目名传给这两个脚本。
+        self.assertGreaterEqual(drill.count('--project-name "$DRILL_PROJECT"'), 2)
+
+    def test_restore_drill_points_the_api_at_the_restored_database(self) -> None:
+        drill = (INFRA / "RESTORE-DRILL.md").read_text(encoding="utf-8")
+
+        # 只改 api 的连接库；postgres 的 POSTGRES_DB 必须保持不变。
+        self.assertIn("POSTGRES_DB: project_operations_restore_verify", drill)
+        self.assertIn("drill.override.yml", drill)
+        # 必须显式核对 API 实际连的库，否则空的初始库也会报 database:up（假 PASS）。
+        self.assertIn("假 PASS", drill)
+        self.assertIn("POSTGRES_DB=project_operations_restore_verify", drill)
+        # 健康检查走宿主端口，不依赖镜像内的 wget。
+        self.assertIn("8081/api/v1/health", drill)
+        # dump 已含 schema，不需要先迁移。
+        self.assertIn("不需要先迁移一个空库", drill)
+
+    def test_restore_drill_documents_real_script_output_and_timing_caveats(self) -> None:
+        drill = (INFRA / "RESTORE-DRILL.md").read_text(encoding="utf-8")
+        restore = (INFRA / "scripts" / "restore.sh").read_text(encoding="utf-8")
+
+        # 文档里引用的输出必须与脚本一致：restore.sh 最后只打印目标库名。
+        self.assertIn('"$target_database"', restore)
+        self.assertIn("[infra] creating new restore target database: project_operations_restore_verify", drill)
+        self.assertNotIn("restore target ready", drill)
+        # 三段之和不是 RTO，且空库不可外推。
+        self.assertIn("不是端到端 RTO", drill)
+        self.assertIn("灾难确认", drill)
+        self.assertIn("空库", drill)
     def test_attachment_backup_artifacts_are_ignored_by_git(self) -> None:
         ignore_rules = (ROOT / ".gitignore").read_text(encoding="utf-8")
         self.assertIn("project-operations-attachments-*.tar.gz", ignore_rules)

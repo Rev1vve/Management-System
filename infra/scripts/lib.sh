@@ -226,6 +226,12 @@ load_compose_context() {
   [[ -f "$ENV_FILE" ]] || die "environment file not found: $ENV_FILE"
 
   COMPOSE_ARGS=(--file "$COMPOSE_FILE" --env-file "$ENV_FILE")
+  # 项目身份必须能显式指定：否则只能靠 env 文件里那一行 COMPOSE_PROJECT_NAME 插值，
+  # 一旦缺失就会静默落到生产项目（附件恢复是整卷替换，后果不可逆）。
+  if [[ -n "${PROJECT_NAME:-}" ]]; then
+    COMPOSE_ARGS+=(--project-name "$PROJECT_NAME")
+    export COMPOSE_PROJECT_NAME="$PROJECT_NAME"
+  fi
   docker compose "${COMPOSE_ARGS[@]}" config --quiet >/dev/null
 }
 
@@ -290,6 +296,7 @@ common_usage() {
 Common options:
   --compose-file FILE  Compose file to use (default: infra/compose.dev.yml)
   --env-file FILE      Compose environment file (default: infra/env/dev.env)
+  --project-name NAME  Compose project to act on (overrides the env file)
   --backup-dir DIR     Backup directory outside the repository
   --help               Show help
 USAGE
@@ -305,6 +312,11 @@ parse_common_option() {
     --env-file)
       [[ $# -ge 2 ]] || die "--env-file requires a value"
       ENV_FILE="$2"
+      PARSED_OPTION_COUNT=2
+      ;;
+    --project-name)
+      [[ $# -ge 2 ]] || die "--project-name requires a value"
+      PROJECT_NAME="$2"
       PARSED_OPTION_COUNT=2
       ;;
     --backup-dir)

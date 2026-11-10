@@ -113,6 +113,11 @@ sudo /srv/Management-System/infra/scripts/prune-backups.sh \
 
 ### 5.2 恢复演练：**不要在生产和生产项目名下做**
 
+> 逐条操作、预期输出与耗时口径见 **`infra/RESTORE-DRILL.md`**。
+> 2026-11-11 已在目标机完成一次演练（空业务库、空附件卷），结论 PASS；三段耗时合计 3.968 s，
+> 但那是"备份与镜像已就绪、演练库已启动"条件下的三段之和，**不是端到端 RTO**。
+> 有真实业务数据后必须重跑，并补：真实附件下载、业务登录、数据库与附件引用一致性。
+
 `verify-backup-restore.sh` 有两道硬约束，别去绕：
 
 1. `require_disposable_project` 要求 Compose 项目名包含 `verify`，生产项目名会被直接拒绝；

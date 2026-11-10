@@ -1,286 +1,330 @@
 # 恢复演练：逐条操作手册（在目标机上执行）
 
-目的：证明"备份真的能变成一套可用系统"，并拿到 **RTO 基线**。
-关键前提：**绝不在生产项目名下做**。下面每一步都有断言，不对就停。
+目的：证明"备份真的能变成一套可用系统"，并拿到**口径明确**的恢复耗时。
+铁律：**绝不在生产项目名下做**。
+
+下面所有片段都在同一个 shell 里执行，先起一个**会真正中止**的断言助手：
+
+```bash
+set -Eeuo pipefail
+fail() { echo "断言失败：$*" >&2; exit 1; }
+DRILL_PROJECT=project-operations-verify
+require_drill_project() {
+  local actual
+  actual="$(sudo docker compose "${DC[@]}" config --format json \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
+  [ "$actual" = "$DRILL_PROJECT" ] || fail "项目名是 $actual，不是 $DRILL_PROJECT，已中止"
+  echo "项目身份确认：$actual"
+}
+```
+
+> 本手册已按 2026-11-11 的实际演练结果修订（空库演练 PASS）。13 条修正见文末"修订依据"。
 
 ---
 
-## 0. 先做一次现成备份（如果没有最新的）
+## 0. 固定选一份"已验证"的备份
+
+不要用通配符去展开 root 专属路径（普通用户 shell 展开会得到空列表）。先**看一眼**，再把目录名写死：
 
 ```bash
-sudo systemctl start project-operations-backup.service
-systemctl show project-operations-backup.service -p Result -p ExecMainStatus
+sudo ls -1t /opt/project-operations/backups/scheduled | head -5
 ```
 
-预期：
-
-```
-Result=success
-ExecMainStatus=0
-```
-
-确认产物存在（每次运行一个目录，里面是 dump + tar.gz + 两个 `.sha256`）：
+挑一个带 `SUCCESS` 的，**手工复制它的名字**：
 
 ```bash
-sudo ls -1t /opt/project-operations/backups/scheduled | head -3
-sudo ls -lh /opt/project-operations/backups/scheduled/<最近那个>/
+# 用实际目录名替换下面这行，不要用 $(ls ...) 展开
+RUN_DIR=/opt/project-operations/backups/scheduled/20261110T140449Z-NAAJo7
+
+sudo ls -l "$RUN_DIR"
 ```
 
-预期 4 个文件：
+预期五个文件（四个备份/校验 + 一个成功标记）：
 
 ```
 project-operations-<ts>.dump
 project-operations-<ts>.dump.sha256
 project-operations-attachments-<ts>.tar.gz
 project-operations-attachments-<ts>.tar.gz.sha256
+SUCCESS
 ```
 
-> `restore.sh` 强制要求 `.sha256` sidecar 与 dump 同目录，缺了会直接 `die "checksum sidecar is required"`。
+```bash
+sudo test -f "$RUN_DIR/SUCCESS" && echo "SUCCESS 标记存在"
+DUMP="$(sudo ls -1 "$RUN_DIR" | grep '\.dump$' | head -1)"
+TAR="$(sudo ls -1 "$RUN_DIR" | grep 'attachments.*\.tar\.gz$' | head -1)"
+echo "dump=$DUMP"; echo "tar=$TAR"
+```
 
 ---
 
-## 1. 准备演练环境文件（含镜像 tag，关键）
-
-演练栈要和服务端**同一批镜像**，否则 `api-tools` 拉不到。镜像 tag 记录在 current 发布的 `release.env` 里：
+## 1. 准备演练配置（三个文件，缺一不可）
 
 ```bash
 COMPOSE=/srv/Management-System/infra/compose.prod.yml
 DRILL_ENV=/opt/project-operations/shared/env/drill.env
-DRILL_PROJECT=project-operations-verify
+DRILL_OVERRIDE=/opt/project-operations/shared/env/drill.override.yml
+RESTORE_DB=project_operations_restore_verify
 
+# 1a) 基础 env：复制生产，再追加覆盖（追加一定生效，不依赖 sed 命中）
 sudo install -m 640 -o root -g 10001 \
   /opt/project-operations/shared/env/prod.env "$DRILL_ENV"
-
-# 追加覆盖（追加在文件末尾一定会生效，不依赖 sed 是否命中）
 {
   printf 'COMPOSE_PROJECT_NAME=%s\n' "$DRILL_PROJECT"
+  printf 'APP_HTTP_PORT=8081\n'                     # 让开生产的 8080
   sudo cat /opt/project-operations/current/release.env
 } | sudo tee -a "$DRILL_ENV" >/dev/null
 
-sudo grep -E 'COMPOSE_PROJECT_NAME|API_IMAGE|WEB_IMAGE|API_TOOLS_IMAGE' "$DRILL_ENV"
+# 1b) override：只把 API 的连接库指到恢复出来的库。
+#     注意 postgres 服务的 POSTGRES_DB 必须保持 project_operations，
+#     否则 postgres 初始化、restore.sh 的"源库"都会跟着变。
+sudo tee "$DRILL_OVERRIDE" >/dev/null <<'YAML'
+services:
+  api:
+    environment:
+      POSTGRES_DB: project_operations_restore_verify
+YAML
+sudo chown root:10001 "$DRILL_OVERRIDE"
+sudo chmod 0640 "$DRILL_OVERRIDE"
 ```
 
-预期最后四行类似：
+组合用的 compose 参数统一成：
 
-```
-COMPOSE_PROJECT_NAME=project-operations-verify
-API_TOOLS_IMAGE=project-operations-api-tools:<sha>
-API_IMAGE=project-operations-api:<sha>
-WEB_IMAGE=project-operations-web:<sha>
+```bash
+DC=(docker compose -f "$COMPOSE" -f "$DRILL_OVERRIDE" --env-file "$DRILL_ENV" -p "$DRILL_PROJECT")
 ```
 
-> 如果 `current` 不存在或 `release.env` 缺失，先回看 `deploy.sh` 的输出——不要凭空猜 tag。
+> `-p` 显式指定，不依赖 env 文件里的 `COMPOSE_PROJECT_NAME` 是否被正确读到。
 
 ---
 
-## 2. 断言项目名（**这一步不能跳**）
+## 2. 断言演练身份（四项，任一不符就停）
 
 ```bash
-actual="$(sudo docker compose -f "$COMPOSE" --env-file "$DRILL_ENV" config --format json \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
-echo "实际项目名=$actual"
-[ "$actual" = "$DRILL_PROJECT" ] || { echo "拒绝继续：项目名是 $actual"; exit 1; }
+require_drill_project
+
+echo "== 入口端口"; sudo docker compose "${DC[@]}" config --format json \
+  | python3 -c 'import json,sys; p=json.load(sys.stdin)["services"]["caddy"]["ports"][0]; assert p["published"]=="8081" and p["host_ip"]=="127.0.0.1", p; print("ok", p)'
+
+echo "== 卷归属"; sudo docker compose "${DC[@]}" config --format json \
+  | python3 -c 'import json,sys; v=json.load(sys.stdin)["volumes"]; assert all((x or {}).get("external") is not True for x in v.values()), v; print("ok", list(v))'
+
+echo "== 库名"; sudo docker compose "${DC[@]}" config --format json \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin)["services"]; api=d["api"]["environment"]["POSTGRES_DB"]; pg=d["postgres"]["environment"]["POSTGRES_DB"]; assert api=="project_operations_restore_verify" and pg=="project_operations", (api,pg); print("ok api=",api,"postgres=",pg)'
 ```
 
-预期打印 `实际项目名=project-operations-verify`。
+预期三行都以 `ok` 开头：
 
-失败含义：env 覆盖没生效，此时 compose 会落回 `compose.prod.yml` 里的 `name:`，也就是**生产项目**。
-继续下去会往生产库建库、甚至 `down --volumes` 删生产卷。**必须停下重做第 1 步。**
+```
+项目身份确认：project-operations-verify
+ok {'target': 8080, 'published': '8081', 'host_ip': '127.0.0.1', ...}
+ok ['attachments_data', 'postgres_data']
+ok api= project_operations_restore_verify postgres= project_operations
+```
+
+最后一行是最关键的一条：**API 连恢复库、postgres 仍指向 `project_operations`**（后者是 `restore.sh` 的"源库"）。
+
+## 3. 只启动演练的 PostgreSQL
+
+`pg_dump` 的 custom-format 里已包含 schema，**不需要先迁移一个空库**。
+
+```bash
+sudo "${DC[@]}" up -d postgres
+sudo "${DC[@]}" ps
+```
+
+预期：`project-operations-verify-postgres-1` 为 `Up ... (healthy)`。
 
 ---
 
-## 3. 起演练栈并跑迁移
+## 4. 计时恢复数据库（RTO 的第一段）
 
 ```bash
-sudo docker compose -f "$COMPOSE" --env-file "$DRILL_ENV" --profile tools run --rm api-tools pnpm db:migrate:deploy
-```
-
-预期最后一行：
-
-```
-✔ Generated Prisma Client ...
-```
-
-再确认演练栈的 postgres 起来了（用 `--profile tools` 是因为该栈只需要 db + tools，不需要 api/web/caddy）：
-
-```bash
-sudo docker compose -f "$COMPOSE" --env-file "$DRILL_ENV" --profile tools up -d postgres
-sudo docker compose -f "$COMPOSE" --env-file "$DRILL_ENV" ps
-```
-
-预期看到 `project-operations-verify-postgres-1` 为 `Up ... (healthy)`。
-
-> 演练栈有自己的卷（项目名前缀不同），与生产数据完全隔离。
-
----
-
-## 4. 计时恢复（RTO 的核心数据）
-
-```bash
-RUN_DIR=$(sudo ls -1d /opt/project-operations/backups/scheduled/*/ | tail -1)
-RUN_DIR="${RUN_DIR%/}"                       # 去掉尾斜杠，否则下面展开成空串
-DUMP=$(sudo ls -1 "$RUN_DIR" | grep '\.dump$' | head -1)
-echo "使用备份：$RUN_DIR/$DUMP"
-
 time sudo /srv/Management-System/infra/scripts/restore.sh \
-  --compose-file "$COMPOSE" --env-file "$DRILL_ENV" \
+  --compose-file "$COMPOSE" \
+  --env-file "$DRILL_ENV" \
+  --project-name "$DRILL_PROJECT" \
   "$RUN_DIR/$DUMP" \
-  project_operations_restore_verify
+  "$RESTORE_DB"
 ```
 
-预期结尾：
+`restore.sh` 的真实输出是两行：先一条日志，最后**单独打印目标库名**（不是 "restored rows"）：
 
 ```
-[infra] restored ... rows ...
+[infra] creating new restore target database: project_operations_restore_verify
+project_operations_restore_verify
 ```
 
-`time` 会打印三行：
+`--project-name` 是必须的：脚本本身不含 `-p`，只靠 env 文件插值时，一旦那行缺失就会落到生产项目去建库。
 
-```
-real    1m23.456s
-user    0m0.123s
-sys     0m0.045s
-```
+记下 `real` 秒数。
 
-**记下 `real`**，这就是数据库侧的恢复耗时。注意它不是完整 RTO（还差"服务重新可用"的时间，见第 6 步）。
+| 报错                                           | 原因                                             |
+| ---------------------------------------------- | ------------------------------------------------ |
+| `backup file not found`                        | `RUN_DIR` 写错（尾斜杠或用了通配符）             |
+| `checksum sidecar is required`                 | 该备份目录缺 `.sha256`                           |
+| `refusing to replace existing target database` | 演练库已存在：换名字，或先 `down --volumes` 重来 |
 
-常见失败：
-
-| 报错                                           | 原因                                                                               |
-| ---------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `backup file not found`                        | 路径拼错（多半是尾斜杠问题），重新按上面取 `RUN_DIR`                               |
-| `checksum sidecar is required`                 | 备份目录里缺 `.sha256`，说明那次备份没走完                                         |
-| `refusing to replace existing target database` | 同名库已存在。换名字（如 `project_operations_restore_verify_2`）或先删掉演练栈的卷 |
-| `not a valid PostgreSQL identifier`            | 库名必须 `^[a-z_][a-z0-9_]{0,62}$`                                                 |
+> `restore.sh` 用 `--env-file` 里的 `POSTGRES_DB` 作为"源库"来建目标库，所以这里**不能**把 `POSTGRES_DB` 改成恢复库名——override 文件只改 `api` 是刻意的。
 
 ---
 
 ## 5. 校验数据（对比生产只读计数）
 
-演练栈里的计数：
-
 ```bash
 sudo docker exec "${DRILL_PROJECT}-postgres-1" psql -U project_operations \
-  -d project_operations_restore_verify \
-  -c 'select (select count(*) from users) users, (select count(*) from projects) projects, (select count(*) from work_logs) work_logs;'
-```
+  -d "$RESTORE_DB" \
+  -c 'select (select count(*) from users) users, (select count(*) from projects) projects, (select count(*) from work_logs) work_logs, (select count(*) from attachments) attachments;'
 
-生产只读计数（**只读，不改任何东西**）：
-
-```bash
 sudo docker exec project-operations-center-prod-postgres-1 psql -U project_operations \
   -d project_operations \
-  -c 'select (select count(*) from users) users, (select count(*) from projects) projects, (select count(*) from work_logs) work_logs;'
+  -c 'select (select count(*) from users) users, (select count(*) from projects) projects, (select count(*) from work_logs) work_logs, (select count(*) from attachments) attachments;'
 ```
 
-预期：**两组数字一致**（演练库是备份时刻的快照，若生产期间有新写入会有少量差异，允许演练 ≤ 生产）。
+预期：两组数字一致（演练 ≤ 生产，差额是备份之后的新写入）。
 
-再抽查一条真实业务数据，确认不是"空表结构"：
-
-```bash
-sudo docker exec "${DRILL_PROJECT}-postgres-1" psql -U project_operations \
-  -d project_operations_restore_verify \
-  -c 'select number, name, status from projects order by created_at desc limit 5;'
-```
+**空库时这两行都是 0——这只能证明"流程能跑通"，不能证明"数据完整"。** 有真实业务数据后必须重跑。
 
 ---
 
-## 6. 附件恢复（另一半数据）
-
-附件在单独的卷里，不放回演练栈就没法说"系统可恢复"。
+## 6. 先恢复附件卷，再启动应用
 
 ```bash
-sudo docker compose -f "$COMPOSE" --env-file "$DRILL_ENV" --profile application up -d
-TAR=$(sudo ls -1 "$RUN_DIR" | grep 'attachments.*\.tar\.gz$' | head -1)
-time sudo env COMPOSE_FILE="$COMPOSE" ENV_FILE="$DRILL_ENV" CONFIRM_ATTACHMENTS_RESTORE=YES \
+time sudo env CONFIRM_ATTACHMENTS_RESTORE=YES \
   /srv/Management-System/infra/scripts/restore-attachments.sh \
-  --compose-file "$COMPOSE" --env-file "$DRILL_ENV" "$RUN_DIR/$TAR"
+  --compose-file "$COMPOSE" \
+  --env-file "$DRILL_ENV" \
+  --project-name "$DRILL_PROJECT" \
+  "$RUN_DIR/$TAR"
 ```
 
-> `CONFIRM_ATTACHMENTS_RESTORE=YES` 是脚本的硬性要求：它替换整个附件卷。演练栈是独立卷，所以安全。
+脚本现在会**拒绝**没有显式项目名的调用，也会拒绝名字里含 `prod` 的项目（除非另设 `RESTORE_ALLOW_PRODUCTION=YES`）。这是整卷替换，不能靠"env 文件应该没问题"来担保。
 
-验证附件数量和体积：
+预期输出含：
+
+```
+attachment_restore=PASS
+```
+
+核对文件数与字节数（演练 vs 生产，两边都只读挂载）：
 
 ```bash
-sudo docker run --rm -v "${DRILL_PROJECT}_attachments_data:/data:ro" alpine:3.24.1 \
-  sh -c 'du -sh /data; find /data -type f | wc -l'
+for project in "$DRILL_PROJECT" project-operations-center-prod; do
+  echo "== $project"
+  sudo docker run --rm -v "${project}_attachments_data:/data:ro" alpine:3.24.1 \
+    sh -c 'find /data -type f | wc -l; find /data -type f -exec sha256sum {} + | sort | sha256sum'
+done
 ```
 
-与生产对比：
-
-```bash
-sudo docker run --rm -v project-operations-center-prod_attachments_data:/data:ro alpine:3.24.1 \
-  sh -c 'du -sh /data; find /data -type f | wc -l'
-```
-
-预期：文件数一致（体积可略有差异）。
+预期：两个项目的**文件数与摘要完全一致**。
 
 ---
 
-## 7. 端到端可用性（完整 RTO 的另一半）
-
-演练栈的 Web/API 起来后，用不同端口验证（避免和生产 8080 冲突）：
+## 7. 启动应用并通过 8081 验证
 
 ```bash
-sudo docker compose -f "$COMPOSE" --env-file "$DRILL_ENV" \
-  --profile application ps
-sudo docker exec "${DRILL_PROJECT}-api-1" wget -qO- --timeout=5 http://127.0.0.1:3001/api/v1/health
+sudo "${DC[@]}" --profile application up -d
+
+for i in $(seq 1 20); do
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:8081/api/v1/health || true)
+  echo "try $i -> $code"
+  # 启动瞬间可能出现 curl (56) Connection reset by peer：有界重试即可，不要当成失败
+  [ "$code" = "200" ] && break
+  sleep 2
+done
+
+curl -fsS http://127.0.0.1:8081/api/v1/health; echo
+curl -fsS -o /dev/null -w 'login=%{http_code}\n' http://127.0.0.1:8081/login
 ```
 
 预期：
 
 ```json
-{ "service": "project-operations-api", "status": "ok", "database": "up" }
+{"service":"project-operations-api","status":"ok","database":"up"}
+login=200
 ```
 
-**完整 RTO = 第 0 步备份耗时（可选）+ 第 4 步 restore `real` + 第 6 步附件恢复耗时 + 第 7 步服务可用时间。**
-
-把四个数填进这张表存档：
-
-| 项目                          | 耗时 |
-| ----------------------------- | ---- |
-| 数据库 restore（`real`）      |      |
-| 附件 restore                  |      |
-| 服务可用（启动到 health 200） |      |
-| **合计 RTO**                  |      |
-
----
-
-## 8. 清理（删之前再断言一次）
+**关键**：健康检查走宿主的 8081 入口，不要在 API 容器里 `wget`——镜像里可能没有这个命令。
+另外确认 API 真的连到恢复库（不是空库）：
 
 ```bash
-actual="$(sudo docker compose -f "$COMPOSE" --env-file "$DRILL_ENV" config --format json \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
-[ "$actual" = "$DRILL_PROJECT" ] || { echo "拒绝销毁：项目名是 $actual"; exit 1; }
-
-sudo docker compose -f "$COMPOSE" --env-file "$DRILL_ENV" down --volumes
-sudo rm -f "$DRILL_ENV"
-sudo docker ps -a | grep -c verify || true
+sudo docker inspect "${DRILL_PROJECT}-api-1" \
+  --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^POSTGRES_(DB|HOST)='
 ```
 
-预期最后一条输出 `0`。
+预期：
+
+```
+POSTGRES_DB=project_operations_restore_verify
+POSTGRES_HOST=postgres
+```
+
+> 若这里显示 `project_operations`，说明 override 没生效——那么上面那条 `database:up` 是**假 PASS**，必须停下修 override。
 
 ---
 
-## 9. 三条铁律
+## 8. 清理（包含全部 profile，删前再断言）
 
-1. **任何 `down --volumes` 之前必须打印项目名**，等于 `project-operations-center-prod` 一律停手。
-2. **不要在演练里跑 `verify-backup-restore.sh`**：它要求项目名含 `verify`，而且会往源库写 `infra_verify` schema。演练请用本手册的 `restore.sh` 路线。
-3. **迁移不随回滚**：演练栈跑的是当前版本的迁移；如果将来要回滚镜像，先确认旧镜像兼容当前表结构。
+```bash
+require_drill_project        # 删之前必须再断言一次，失败即中止
+sudo "${DC[@]}" --profile application --profile tools --profile maintenance down --volumes
+
+# 再次确认演练资源已消失、生产仍在
+sudo docker ps -a --format '{{.Names}}' | grep -c verify || true          # 期望 0
+sudo docker volume ls --format '{{.Name}}' | grep -c verify || true       # 期望 0
+curl -fsS http://127.0.0.1:8080/api/v1/health; echo                       # 生产仍 200
+
+sudo rm -f "$DRILL_ENV" "$DRILL_OVERRIDE"
+```
 
 ---
 
-## 10. 演练记录模板（建议存进 `backups/drills/`）
+## 9. 耗时口径（别把三段之和叫 RTO）
+
+| 阶段         | 本次实测    | 说明               |
+| ------------ | ----------- | ------------------ |
+| 数据库恢复   | 0.668 s     | 空库，仅供参考     |
+| 附件恢复     | 0.279 s     | 空卷，仅供参考     |
+| 启动到健康   | 3.021 s     | 镜像已在本地       |
+| **三段合计** | **3.968 s** | **不是端到端 RTO** |
+
+三段合计**不含**：发现故障、决定恢复、找备份、异机取回备份、建环境、数据库冷启动、人工操作间隔、业务功能验证。
+
+**完整 RTO 应从"灾难确认"计时到"业务可用"，并且要在有真实数据量时测。**
+
+---
+
+## 10. 记录模板
 
 ```
-日期：2026-11-__T__:__+11:00
-备份来源：scheduled/<run-id>
-镜像：api=<sha> tools=<sha>
-数据库 restore（real）：___
-附件 restore：___
-服务可用：___
-合计 RTO：___
-计数对比：users ___/___ projects ___/___ work_logs ___/___
+日期：
+备份来源：scheduled/<run-id>（含 SUCCESS）
+镜像：api=<sha> web=<sha> tools=<sha>（附实际 image ID）
+数据库恢复 real：___ s   目标库：project_operations_restore_verify
+附件恢复：___ s          文件数/摘要一致：是/否
+启动到健康：___ s        8081 health=200 login=200
+计数对比：users __/__ projects __/__ work_logs __/__ attachments __/__
+API 连接的库：project_operations_restore_verify（已 inspect 确认）
+三段合计：___ s（不等于端到端 RTO）
+端到端 RTO（灾难确认 → 业务可用）：___ s（需真实数据量）
 结论：PASS / FAIL
-异常与处理：
+异常：
 ```
+
+---
+
+## 11. 修订依据（2026-11-11 实际演练的 13 条修正）
+
+1. 备份运行目录含 `SUCCESS`，正常是四文件 + 一个标记；
+2. 固定使用已成功且已校验的目录，不用 shell 通配符展开 root 路径；
+3. 演练 `APP_HTTP_PORT=8081`，仍绑 `127.0.0.1`；
+4. compose 显式 `-p project-operations-verify`，恢复脚本显式传项目名；
+5. 对项目名、卷名、external 标记、端口、回环绑定做断言；
+6. 先只起演练 PostgreSQL；dump 已含 schema，无需先迁移；
+7. `restore.sh` 的成功输出是目标库名，不是 "restored rows"；
+8. 先初始化并恢复附件卷，再启动应用；
+9. 需要 `drill.override.yml` 只覆盖 `api.environment.POSTGRES_DB`，否则 API 连的是空库；
+10. 健康检查走宿主 8081，不依赖 API 镜像里的 `wget`；
+11. 启动瞬间的 `curl (56) Connection reset` 属正常，用有界重试；
+12. 不调用会写 `infra_verify` schema 的 `verify-backup-restore.sh`；
+13. 清理时带上 application/tools/maintenance 全部 profile，并复核项目与卷归属。
