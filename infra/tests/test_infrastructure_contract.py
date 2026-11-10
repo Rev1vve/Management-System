@@ -29,6 +29,7 @@ EXPECTED_FILES = [
     INFRA / "scripts" / "deploy.sh",
     INFRA / "scripts" / "install-backup-timer.sh",
     INFRA / "scripts" / "prune-backups.sh",
+    INFRA / "scripts" / "seed-drill-data.sh",
     INFRA / "scripts" / "rollback.sh",
     INFRA / "scripts" / "tailscale-serve.sh",
     INFRA / "scripts" / "backup-attachments.sh",
@@ -842,6 +843,19 @@ printf 'verification=PASS\\n'
         self.assertIn("不是端到端 RTO", drill)
         self.assertIn("灾难确认", drill)
         self.assertIn("空库", drill)
+
+    def test_seed_drill_data_refuses_non_drill_projects(self) -> None:
+        script = (INFRA / "scripts" / "seed-drill-data.sh").read_text(encoding="utf-8")
+
+        # 必须显式给项目名，且名字里要含 verify；否则拒绝写入。
+        self.assertIn("拒绝在生产项目上灌数据", script)
+        self.assertIn('"$PROJECT_NAME" == *verify*', script)
+        # 合成数据只用于计时，必须一眼可辨、可清理。
+        self.assertIn("drill.invalid", script)
+        self.assertIn("seed_marker", script)
+        # 工作日志从 DRAFT 起步，符合数据库守卫。
+        self.assertIn("'DRAFT'", script)
+
     def test_attachment_backup_artifacts_are_ignored_by_git(self) -> None:
         ignore_rules = (ROOT / ".gitignore").read_text(encoding="utf-8")
         self.assertIn("project-operations-attachments-*.tar.gz", ignore_rules)

@@ -313,6 +313,47 @@ API 连接的库：project_operations_restore_verify（已 inspect 确认）
 
 ---
 
+## 10b. 有数据量时的演练（RTO 才有意义）
+
+空库 0.668 秒说明不了任何事。在演练栈里灌一批可控规模的合成数据，再备份→恢复，得到的耗时才可以外推。
+
+```bash
+# 1) 灌数据（默认 200 用户 / 100 项目 / 20000 条工作日志）
+sudo /srv/Management-System/infra/scripts/seed-drill-data.sh \
+  --project-name "$DRILL_PROJECT" \
+  --env-file "$DRILL_ENV" \
+  --users 200 --projects 100 --work-logs 20000
+
+# 2) 在这个演练栈上做一次备份（进各自的目录，别污染生产备份）
+sudo env COMPOSE_FILE="$COMPOSE" ENV_FILE="$DRILL_ENV" \
+  /srv/Management-System/infra/scripts/backup.sh \
+  --compose-file "$COMPOSE" --env-file "$DRILL_ENV" \
+  --project-name "$DRILL_PROJECT" \
+  --backup-dir /opt/project-operations/backups/drill
+
+# 3) 记下 dump 大小，这是解释 RTO 的关键变量
+sudo ls -lh /opt/project-operations/backups/drill
+
+# 4) 按第 4~7 步计时恢复，把"数据量 + 耗时"成对记录
+```
+
+记录模板（补上数据量这一列）：
+
+```
+数据量：users=200 projects=100 work_logs=20000 versions=20000
+dump 大小：___ MB
+数据库恢复 real：___ s
+附件恢复：___ s（若有附件）
+启动到健康：___ s
+```
+
+- [ ] 至少测两个量级（例如 1 万条与 5 万条），确认耗时随数据量的走势，而不是只有一个点
+- [ ] 合成数据只用于计时，**不要**用它替代真实业务数据的完整性验证
+- [ ] 演练完按第 8 步清理；`backups/drill` 里的产物可以保留作对比
+
+> 合成数据的账号形如 `DRILL-u1`、邮箱域名 `drill.invalid`、项目号 `DRILL-P1`、日志号 `DRILL-WL1`，一眼可辨、便于清理。
+> 脚本会拒绝没有显式 `--project-name` 的调用，也拒绝名字不含 `verify` 的项目。
+
 ## 11. 修订依据（2026-11-11 实际演练的 13 条修正）
 
 1. 备份运行目录含 `SUCCESS`，正常是四文件 + 一个标记；
