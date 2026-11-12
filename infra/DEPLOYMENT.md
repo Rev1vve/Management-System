@@ -45,6 +45,34 @@ sudo /srv/Management-System/infra/scripts/deploy.sh --source /srv/Management-Sys
 - [ ] 输出 `部署完成`；`current` 指向本次 sha
 - [ ] `curl -fsS http://127.0.0.1:8080/api/v1/health` 返回 `{"status":"ok","database":"up"}`
 
+## 2b. 更新已部署的机器（每次拉新代码都要做）
+
+部署机是 git 检出的副本，**仓库更新后必须同步**，否则新脚本在机器上根本不存在（曾因此出现"文档里有 install-alerting.sh，机器上没有"）。
+
+```bash
+# 看一眼有没有本地改动（可能是线上热修）
+sudo git -c safe.directory=/srv/Management-System -C /srv/Management-System status --short
+
+# 干净时：一条命令同步并部署
+sudo /srv/Management-System/infra/scripts/deploy.sh --source /srv/Management-System --pull
+
+# 只同步、不重新构建（只改了脚本/文档时）
+sudo /srv/Management-System/infra/scripts/deploy.sh --source /srv/Management-System --pull --skip-build --skip-migrate
+```
+
+`--pull` 的行为：`fetch --prune` → `merge --ff-only origin/main`；
+**工作区有未提交改动时直接拒绝**，不会替你 merge 或丢弃——那些改动可能是有人在机器上直接修的。
+
+同步后确认：
+
+```bash
+sudo git -c safe.directory=/srv/Management-System -C /srv/Management-System log --oneline -3
+ls /srv/Management-System/infra/scripts/
+```
+
+> 如果本地改动其实已经进了仓库（例如某次热修后来被正式提交），先用 `git stash push -u`
+> 把它收起来再 pull；确认 `git diff HEAD` 为空后，再用 `git stash list` 找到它并视情况清理。
+
 ## 3. Tailscale 私网入口
 
 ```bash

@@ -923,6 +923,22 @@ printf 'verification=PASS\\n'
         # 两条通道都要有"发送测试并确认收到"的要求。
         self.assertIn("没收到就别认为装好了", installer)
 
+
+    def test_deploy_can_sync_the_checkout_but_never_discards_local_work(self) -> None:
+        deploy = (INFRA / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+        doc = (INFRA / "DEPLOYMENT.md").read_text(encoding="utf-8")
+
+        # 部署前必须能同步代码，否则会拿旧提交部署（新脚本在机器上不存在）。
+        self.assertIn("--pull", deploy)
+        self.assertIn("merge --ff-only", deploy)
+        # 有本地改动时拒绝自动合并，绝不替用户丢弃修改。
+        self.assertIn("工作区有未提交改动，拒绝自动 pull", deploy)
+        self.assertNotIn("checkout -- .", deploy)
+        self.assertNotIn("reset --hard", deploy)
+        # 文档要写清"仓库更新后必须同步"这件事。
+        self.assertIn("更新已部署的机器", doc)
+        self.assertIn("否则新脚本在机器上根本不存在", doc)
+
     def test_attachment_backup_artifacts_are_ignored_by_git(self) -> None:
         ignore_rules = (ROOT / ".gitignore").read_text(encoding="utf-8")
         self.assertIn("project-operations-attachments-*.tar.gz", ignore_rules)

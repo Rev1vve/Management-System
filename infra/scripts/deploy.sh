@@ -25,6 +25,8 @@ Options:
   --env-file <path>      Production env file (default: <deploy-root>/shared/env/prod.env)
   --skip-build           Reuse existing images instead of rebuilding
   --skip-migrate         Do not run database migrations
+  --pull                 Fast-forward the checkout from origin before deploying
+  --remote REF           Branch to pull (default: main)
   --dry-run              Print the commands instead of running them
   --help                 Show this help
 
@@ -41,6 +43,8 @@ DEPLOY_ROOT="/opt/project-operations"
 ENV_FILE=""
 SKIP_BUILD=0
 SKIP_MIGRATE=0
+PULL=0
+REMOTE_BRANCH=main
 DRY_RUN=0
 
 while (($# > 0)); do
@@ -51,6 +55,8 @@ while (($# > 0)); do
     --env-file) ENV_FILE="${2:?--env-file 需要路径}"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     --skip-migrate) SKIP_MIGRATE=1; shift ;;
+    --pull) PULL=1; shift ;;
+    --remote) REMOTE_BRANCH="${2:?--remote 需要分支名}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     *) die "未知参数: $1" ;;
   esac
@@ -68,6 +74,18 @@ docker compose version >/dev/null 2>&1 || die "缺少 docker compose v2"
 # sudo 下访问 git 仓库会遇到 dubious ownership，先登记信任再取 sha，取不到就中止。
 git config --global --get-all safe.directory 2>/dev/null | grep -qx "$SOURCE" ||
   git config --global --add safe.directory "$SOURCE" 2>/dev/null || true
+
+if ((PULL)); then
+  # 部署前先同步：否则会拿旧提交去部署，新脚本在机器上根本不存在。
+  # 工作区有本地改动时拒绝自动合并——那些改动可能是线上热修，需要人工处理。
+  if [[ -n "$(git -C "$SOURCE" status --porcelain)" ]]; then
+    die "工作区有未提交改动，拒绝自动 pull：先 git -C $SOURCE status 看清楚再决定"
+  fi
+  log "同步代码：origin/$REMOTE_BRANCH"
+  git -C "$SOURCE" fetch --prune origin
+  git -C "$SOURCE" merge --ff-only "origin/$REMOTE_BRANCH" ||
+    die "无法快进到 origin/$REMOTE_BRANCH（本地有分叉提交？）"
+fi
 SHA="$(git -C "$SOURCE" rev-parse --short HEAD 2>/dev/null)" || die "无法读取 $SOURCE 的 git 提交"
 [[ -n "$SHA" ]] || die "无法读取提交号"
 
